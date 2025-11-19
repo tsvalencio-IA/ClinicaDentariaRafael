@@ -1,38 +1,40 @@
 // =====================================================================
-// ESTE ARQUIVO É O CORE DE CONFIGURAÇÃO DO PROJETO.
-// Ele define o ambiente de trabalho (Firebase, Auth, Cloudinary, Gemini).
+// 🔑 ARQUIVO DE CONFIGURAÇÃO: js/config.js
 // =====================================================================
 
-// 1. CONFIGURAÇÕES FIREBASE (Firestore)
-// NOTA: Em nosso ambiente, estas são injetadas automaticamente por variáveis globais.
-const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : { /* Valores dummy para evitar erros */ };
-const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+// 1. CONFIGURAÇÃO FIREBASE (SEUS DADOS REAIS: dental-80cad)
+const firebaseConfig = {
+    apiKey: "AIzaSyBs1EWOvZXw52Ih-m_mhsCofRcjmxY8xQw",
+    authDomain: "dental-80cad.firebaseapp.com",
+    databaseURL: "https://dental-80cad-default-rtdb.firebaseio.com",
+    projectId: "dental-80cad",
+    storageBucket: "dental-80cad.firebasestorage.app",
+    messagingSenderId: "883904798384",
+    appId: "1:883904798384:web:df25e88c245d4edc1ba575"
+};
 
-// 2. CONFIGURAÇÕES CLOUDINARY (Mídia e Imagens)
-// NOTA: Você mencionou que quer configurar. Deixaremos estas variáveis globais
-// para que o JS possa usar o serviço de upload.
+// Token inicial (Null para exigir login manual)
+const initialAuthToken = null; 
+
+// 2. CONFIGURAÇÃO CLOUDINARY (SEUS DADOS REAIS)
 const CLOUDINARY_CLOUD_NAME = "djtiaygrs";
 const CLOUDINARY_UPLOAD_PRESET = "dental";
 
-// 3. CONFIGURAÇÃO GOOGLE GEMINI API (O BRAIN)
-// AVISO: Esta chave é necessária para a inteligência artificial do Diário.
-// Como não podemos expor a chave diretamente no código, ela será tratada no app.js
-// ou injetada pelo ambiente (como o Canvas faz com o token).
+// 3. CONFIGURAÇÃO GOOGLE GEMINI API
+// ATENÇÃO: Cole sua chave do Google AI Studio abaixo onde diz "SUA_CHAVE_AQUI"
 const GEMINI_MODEL = "gemini-2.5-flash-preview-09-2025";
-const API_KEY = ""; // Deixe vazio para que o Canvas injete em runtime
+const API_KEY = "SUA_CHAVE_AQUI_GEMINI_API_KEY"; 
 
-// 4. MÓDULOS DE NAVEGAÇÃO
-const NAV_ITEMS = [
-    { id: 'dashboard', label: 'Dashboard & BRAIN', icon: 'bxs-dashboard' },
-    { id: 'patients', label: 'Pacientes & Diários', icon: 'bxs-group' },
-    { id: 'financials', label: 'Financeiro & Estoque', icon: 'bxs-wallet' }
-];
+// 4. ID INTERNO DO APP
+const APP_ID = 'dentista-inteligente-app';
 
-// Mantenha as configurações globais para acesso do app.js
-window.firebaseConfig = firebaseConfig;
-window.initialAuthToken = initialAuthToken;
-window.CLOUDINARY_CLOUD_NAME = CLOUDINARY_CLOUD_NAME;
-window.CLOUDINARY_UPLOAD_PRESET = CLOUDINARY_UPLOAD_PRESET;
-window.GEMINI_MODEL = GEMINI_MODEL;
-window.API_KEY = API_KEY;
-window.NAV_ITEMS = NAV_ITEMS;
+// Exporta as configurações para uso global no app.js
+window.AppConfig = {
+    firebaseConfig,
+    initialAuthToken,
+    CLOUDINARY_CLOUD_NAME,
+    CLOUDINARY_UPLOAD_PRESET,
+    GEMINI_MODEL,
+    API_KEY,
+    APP_ID
+};
