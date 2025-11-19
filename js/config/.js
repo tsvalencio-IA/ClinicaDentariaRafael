@@ -11,8 +11,8 @@ const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial
 // 2. CONFIGURAÇÕES CLOUDINARY (Mídia e Imagens)
 // NOTA: Você mencionou que quer configurar. Deixaremos estas variáveis globais
 // para que o JS possa usar o serviço de upload.
-const CLOUDINARY_CLOUD_NAME = "substitua-pelo-seu-cloud-name";
-const CLOUDINARY_UPLOAD_PRESET = "substitua-pelo-seu-preset";
+const CLOUDINARY_CLOUD_NAME = "djtiaygrs";
+const CLOUDINARY_UPLOAD_PRESET = "dental";
 
 // 3. CONFIGURAÇÃO GOOGLE GEMINI API (O BRAIN)
 // AVISO: Esta chave é necessária para a inteligência artificial do Diário.
