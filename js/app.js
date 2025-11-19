@@ -3,12 +3,46 @@
 // ==================================================================
 
 // Variáveis Globais (Definidas em config.js e Injetadas pelo ambiente)
-const { firebaseConfig, initialAuthToken, CLOUDINARY_CLOUD_NAME, CLOUDINARY_UPLOAD_PRESET, NAV_ITEMS, GEMINI_MODEL, API_KEY } = window;
+const { firebaseConfig, initialAuthToken, CLOUDINARY_CLOUD_NAME, CLOUDINARY_UPLOAD_PRESET, NAV_ITEMS, GEMINI_MODEL, API_KEY } = window.AppConfig; 
 const appId = 'dentista-inteligente-app'; // App ID Fixo
 
 let db, auth;
 let currentUser = null;
 let currentView = 'dashboard';
+
+// ==================================================================
+// FUNÇÕES AUXILIARES
+// ==================================================================
+
+// Caminhos do Firestore (para segurança multi-tenant por Dentista)
+const getAdminCollectionPath = (uid, collectionName) => `artifacts/${appId}/users/${uid}/${collectionName}`;
+const getJournalCollectionPath = (patientId) => `artifacts/${appId}/patients/${patientId}/journal`;
+
+// Funções de Formatação (para UI)
+const formatFileName = (name) => {
+    if (name.length > 20) {
+        return name.substring(0, 10) + '...' + name.substring(name.length - 7);
+    }
+    return name;
+};
+
+const formatDateTime = (isoString) => {
+    // Formato 'DD/MM/YYYY HH:MM'
+    const date = new Date(isoString);
+    if (isNaN(date)) return 'Data Inválida';
+    
+    const pad = (num) => num.toString().padStart(2, '0');
+
+    const day = pad(date.getDate());
+    const month = pad(date.getMonth() + 1);
+    const year = date.getFullYear();
+    const hour = pad(date.getHours());
+    const minute = pad(date.getMinutes());
+
+    return `${day}/${month}/${year} ${hour}:${minute}`;
+};
+
+// --- FIM DAS FUNÇÕES AUXILIARES ---
 
 // Funções de Inicialização e Utilitários
 const showNotification = (message, type = 'success') => {
@@ -134,7 +168,6 @@ const renderDashboard = (container) => {
                 <i class='bx bxs-dashboard text-3xl mr-3 text-indigo-600'></i> Dashboard & Visão Geral
             </h2>
 
-            <!-- KPIs MOCK (Techmess/Habibi) -->
             <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-10">
                 <div class="p-4 bg-indigo-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Pacientes</p><p class="text-2xl font-bold text-indigo-800">0</p></div>
                 <div class="p-4 bg-cyan-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Ativos IA</p><p class="text-2xl font-bold text-cyan-800">0</p></div>
@@ -142,7 +175,6 @@ const renderDashboard = (container) => {
                 <div class="p-4 bg-red-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Alertas Est.</p><p class="text-2xl font-bold text-red-800">0</p></div>
             </div>
 
-            <!-- Seção de Alimentação do BRAIN (Kumon-IA) -->
             <div class="border border-indigo-300 p-6 rounded-xl bg-indigo-50">
                 <h3 class="text-2xl font-semibold text-indigo-800 mb-4 flex items-center">
                     <i class='bx bxs-brain text-xl mr-2'></i> Alimentar o BRAIN (Diretrizes da IA)
@@ -219,7 +251,6 @@ const renderPatientManager = (container) => {
                 </button>
             </div>
 
-            <!-- Tabela de Pacientes -->
             <div class="overflow-x-auto bg-gray-50 rounded-xl shadow-inner border border-gray-200">
                 <table class="min-w-full divide-y divide-gray-200">
                     <thead class="bg-gray-200">
@@ -427,23 +458,18 @@ const deletePatient = async (patientId, patientName) => {
 const openJournalModal = (patient) => {
     document.getElementById('modal-title').textContent = `Diário: ${patient.name} (${patient.treatmentType})`;
     document.getElementById('modal-body').innerHTML = `
-        <!-- Informações Contextuais -->
         <div class="bg-yellow-50 p-3 rounded-lg mb-4 border border-yellow-200 text-xs text-gray-700">
             <p class="font-semibold mb-1">Tipo: <span class="text-indigo-600">${patient.treatmentType}</span> | Meta: ${patient.treatmentGoal}</p>
         </div>
         
-        <!-- Timeline de Mensagens -->
         <div id="journal-timeline" class="content-scroll flex flex-col-reverse overflow-y-auto h-96 p-3 bg-gray-50 rounded-lg border border-gray-200">
-            <!-- As mensagens serão injetadas aqui -->
             <p class="text-center text-gray-500 italic">Carregando interações...</p>
         </div>
 
-        <!-- Área de Resposta do Dentista -->
         <div class="p-4 bg-white border border-indigo-300 rounded-lg shadow-md mt-4">
             <textarea id="dentist-response-input" rows="3" class="w-full p-3 border border-gray-300 rounded-lg resize-none mb-3" placeholder="Digite sua resposta ou orientação..."></textarea>
             
             <div class="flex justify-between items-center">
-                <!-- Botões de Mídia/Anexo -->
                 <div>
                     <button id="attach-media-btn" class="p-2 text-indigo-600 hover:bg-indigo-100 rounded-full transition" title="Anexar Foto ou Documento">
                         <i class='bx bx-paperclip text-xl'></i>
@@ -452,7 +478,6 @@ const openJournalModal = (patient) => {
                     <span id="file-name-display" class="text-xs text-gray-600 ml-2"></span>
                 </div>
 
-                <!-- Botões de IA e Envio -->
                 <div class="flex space-x-3">
                     <button id="ask-ai-btn" data-patient-id="${patient.id}" class="py-2 px-4 bg-cyan-600 hover:bg-cyan-700 text-white font-semibold rounded-lg text-sm">
                         <i class='bx bxs-brain text-xl mr-2'></i> Pedir Ajuda à IA
@@ -496,8 +521,8 @@ const setupJournalListeners = (patient) => {
         fileNameDisplay.textContent = '';
     });
     
-    // Listener para o botão de Ajuda da IA (Simulação)
-    askAiBtn.addEventListener('click', () => simulateAIResponse(patient));
+    // Listener para o botão de Ajuda da IA
+    askAiBtn.addEventListener('click', () => handleAIRequest(patient));
 
     // Listener Firestore para o Diário
     const journalRef = db.collection(getJournalCollectionPath(patient.id));
@@ -510,15 +535,26 @@ const setupJournalListeners = (patient) => {
 const sendJournalEntry = async (patient, text, author, file) => {
     if (!text.trim() && !file) return;
 
-    // Simulação do upload de arquivo (Em produção usaria Cloudinary)
     let mediaData = null;
+    let uploadPromise = Promise.resolve(null);
+    
     if (file) {
-        // Aqui simularíamos o upload para o Cloudinary e pegaríamos a URL real
-        const tempUrl = URL.createObjectURL(file); 
-        mediaData = { url: tempUrl, type: file.type, name: file.name };
-        showNotification(`Simulação: Arquivo ${file.name} "enviado" para mídia.`, 'warning');
+        // UPLOAD REAL: Chama a função Cloudinary
+        uploadPromise = window.uploadToCloudinary(file).then(res => {
+            showNotification(`Arquivo ${file.name} enviado para Cloudinary!`, 'success');
+            return res;
+        }).catch(error => {
+            showNotification(`Falha ao carregar arquivo: ${error.message}`, 'error');
+            return null; // Não envia a entrada se o upload falhar
+        });
     }
 
+    // Aguarda o upload do arquivo (se houver)
+    mediaData = await uploadPromise;
+
+    // Se houver texto ou o upload foi bem-sucedido, prossegue com o envio da entrada.
+    if (!text.trim() && !mediaData) return;
+    
     const entryData = {
         text: text.trim(),
         author: author,
@@ -534,34 +570,38 @@ const sendJournalEntry = async (patient, text, author, file) => {
     }
 };
 
-const simulateAIResponse = async (patient) => {
+const handleAIRequest = async (patient) => {
     const askAiBtn = document.getElementById('ask-ai-btn');
     askAiBtn.disabled = true;
     askAiBtn.innerHTML = "<i class='bx bx-loader-alt bx-spin text-xl mr-2'></i> IA Pensando...";
     
-    // 1. Obter as diretrizes do BRAIN
-    const brainDocRef = db.collection(`artifacts/${appId}/users/${currentUser.uid}/aiConfig`).doc('directives');
-    const brainSnap = await brainDocRef.get();
-    const directives = brainSnap.exists ? brainSnap.data().promptDirectives : 'Atuar como assistente padrão.';
-    
-    // 2. Personalizar o Prompt
-    const personalizedPrompt = directives
-        .replace(/Variável de Tratamento: \[TIPO\]/, `Variável de Tratamento: ${patient.treatmentType || 'Geral'}`)
-        .replace(/Meta: \[META\]/, `Meta: ${patient.treatmentGoal || 'N/A'}`);
-    
-    // 3. Simulação da Lógica do LLM (Gemini)
-    const mockLLMResponse = await new Promise(resolve => setTimeout(() => {
-        if (personalizedPrompt.includes('Ortodontia') && personalizedPrompt.includes('elásticos')) {
-            return resolve(`Olá ${patient.name}! Como seu tratamento é Ortodontia, por favor, lembre-se de usar seus elásticos! O Dr(a). quer garantir que a Meta: "${patient.treatmentGoal}" seja atingida.`);
-        }
-        return resolve(`Olá ${patient.name}, sou sua assistente de IA. Progresso parece normal! Lembra-se da higiene!`);
-    }, 2500));
-    
-    // 4. Enviar a resposta da IA
-    sendJournalEntry(patient, mockLLMResponse, 'Assistente IA', null);
-    
-    askAiBtn.disabled = false;
-    askAiBtn.innerHTML = "<i class='bx bxs-brain text-xl mr-2'></i> Pedir Ajuda à IA";
+    try {
+        // 1. Obter as diretrizes do BRAIN
+        const brainDocRef = db.collection(`artifacts/${appId}/users/${currentUser.uid}/aiConfig`).doc('directives');
+        const brainSnap = await brainDocRef.get();
+        const directives = brainSnap.exists ? brainSnap.data().promptDirectives : 'Atuar como assistente padrão de clínica odontológica.';
+        
+        // 2. Personalizar o Prompt de Sistema
+        const systemPrompt = directives
+            .replace(/Variável de Tratamento: \[TIPO\]/, `Variável de Tratamento: ${patient.treatmentType || 'Geral'}`)
+            .replace(/Meta: \[META\]/, `Meta: ${patient.treatmentGoal || 'N/A'}`);
+        
+        // 3. Montar a Mensagem do Usuário (Contexto)
+        const userMessage = `Você é o assistente do Dr(a). ${currentUser.email}. O paciente ${patient.name} com tratamento "${patient.treatmentType}" e meta "${patient.treatmentGoal}" acaba de solicitar uma orientação/status. Responda-o com base nas diretrizes. Use um tom encorajador e profissional.`;
+
+        // 4. CHAMA A FUNÇÃO REAL DA API (Implementada em js/ai.js)
+        const geminiResponseText = await window.callGeminiAPI(systemPrompt, userMessage);
+        
+        // 5. Enviar a resposta da IA para o Diário
+        sendJournalEntry(patient, geminiResponseText, 'Assistente IA', null);
+
+    } catch (e) {
+        showNotification(`Erro na solicitação de IA: ${e.message}`, 'error');
+        console.error("Erro na solicitação de IA:", e);
+    } finally {
+        askAiBtn.disabled = false;
+        askAiBtn.innerHTML = "<i class='bx bxs-brain text-xl mr-2'></i> Pedir Ajuda à IA";
+    }
 };
 
 
@@ -607,7 +647,6 @@ const renderFinancialManager = (container) => {
             
             <p class="text-gray-600">Módulo em desenvolvimento. Aqui faremos o CRUD completo de Materiais, Equipamentos, Despesas e Procedimentos, adaptando a lógica do Techmess ERP.</p>
             
-            <!-- Exemplo de Card -->
             <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
                  <div class="p-4 bg-yellow-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Contas a Pagar</p><p class="text-2xl font-bold text-yellow-800">${formatCurrency(1250)}</p></div>
                  <div class="p-4 bg-green-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Próxima Receita</p><p class="text-2xl font-bold text-green-800">${formatCurrency(3400)}</p></div>
