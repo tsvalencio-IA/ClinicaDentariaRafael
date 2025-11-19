@@ -6,7 +6,7 @@
 const firebaseConfig = {
     apiKey: "AIzaSyBs1EWOvZXw52Ih-m_mhsCofRcjmxY8xQw",
     authDomain: "dental-80cad.firebaseapp.com",
-    databaseURL: "https://dental-80cad-default-rtdb.firebaseio.com",
+    databaseURL: "https://dental-80cad-default-rtdb.firebaseio.com", // Incluído seu Realtime DB URL
     projectId: "dental-80cad",
     storageBucket: "dental-80cad.firebasestorage.app",
     messagingSenderId: "883904798384",
@@ -28,6 +28,13 @@ const API_KEY = "SUA_CHAVE_AQUI_GEMINI_API_KEY";
 // 4. ID INTERNO DO APP
 const APP_ID = 'dentista-inteligente-app';
 
+// 5. ITENS DE NAVEGAÇÃO
+const NAV_ITEMS = [
+    { id: 'dashboard', label: 'Dashboard & IA', icon: 'bxs-dashboard' },
+    { id: 'patients', label: 'Gestão de Pacientes', icon: 'bxs-group' },
+    { id: 'financials', label: 'Financeiro & Estoque', icon: 'bxs-wallet' },
+];
+
 // Exporta as configurações para uso global no app.js
 window.AppConfig = {
     firebaseConfig,
@@ -36,5 +43,6 @@ window.AppConfig = {
     CLOUDINARY_UPLOAD_PRESET,
     GEMINI_MODEL,
     API_KEY,
-    APP_ID
+    APP_ID,
+    NAV_ITEMS
 };
