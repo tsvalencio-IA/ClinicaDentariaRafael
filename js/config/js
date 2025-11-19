@@ -1,0 +1,38 @@
+// =====================================================================
+// ESTE ARQUIVO É O CORE DE CONFIGURAÇÃO DO PROJETO.
+// Ele define o ambiente de trabalho (Firebase, Auth, Cloudinary, Gemini).
+// =====================================================================
+
+// 1. CONFIGURAÇÕES FIREBASE (Firestore)
+// NOTA: Em nosso ambiente, estas são injetadas automaticamente por variáveis globais.
+const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : { /* Valores dummy para evitar erros */ };
+const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+// 2. CONFIGURAÇÕES CLOUDINARY (Mídia e Imagens)
+// NOTA: Você mencionou que quer configurar. Deixaremos estas variáveis globais
+// para que o JS possa usar o serviço de upload.
+const CLOUDINARY_CLOUD_NAME = "substitua-pelo-seu-cloud-name";
+const CLOUDINARY_UPLOAD_PRESET = "substitua-pelo-seu-preset";
+
+// 3. CONFIGURAÇÃO GOOGLE GEMINI API (O BRAIN)
+// AVISO: Esta chave é necessária para a inteligência artificial do Diário.
+// Como não podemos expor a chave diretamente no código, ela será tratada no app.js
+// ou injetada pelo ambiente (como o Canvas faz com o token).
+const GEMINI_MODEL = "gemini-2.5-flash-preview-09-2025";
+const API_KEY = ""; // Deixe vazio para que o Canvas injete em runtime
+
+// 4. MÓDULOS DE NAVEGAÇÃO
+const NAV_ITEMS = [
+    { id: 'dashboard', label: 'Dashboard & BRAIN', icon: 'bxs-dashboard' },
+    { id: 'patients', label: 'Pacientes & Diários', icon: 'bxs-group' },
+    { id: 'financials', label: 'Financeiro & Estoque', icon: 'bxs-wallet' }
+];
+
+// Mantenha as configurações globais para acesso do app.js
+window.firebaseConfig = firebaseConfig;
+window.initialAuthToken = initialAuthToken;
+window.CLOUDINARY_CLOUD_NAME = CLOUDINARY_CLOUD_NAME;
+window.CLOUDINARY_UPLOAD_PRESET = CLOUDINARY_UPLOAD_PRESET;
+window.GEMINI_MODEL = GEMINI_MODEL;
+window.API_KEY = API_KEY;
+window.NAV_ITEMS = NAV_ITEMS;
