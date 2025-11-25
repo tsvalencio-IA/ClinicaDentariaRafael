@@ -22,8 +22,9 @@ const getStockCollectionPath = (uid) => `artifacts/${appId}/users/${uid}/stock`;
 // FINANCEIRO
 const getExpensePath = (uid) => `artifacts/${appId}/users/${uid}/finance/expenses`; 
 const getReceivablePath = (uid) => `artifacts/${appId}/users/${uid}/finance/receivable`; 
-// NOVO: Caminho para materiais vinculados a um receivable
+// Caminho para materiais vinculados
 const getReceivableMaterialsPath = (receivableId) => `${getReceivablePath(currentUser.uid)}/${receivableId}/materials`;
+const getExpensePurchasedItemsPath = (expenseId) => `${getExpensePath(currentUser.uid)}/${expenseId}/purchasedItems`; // NOVO CAMINHO
 
 // Funções de Formatação (para UI)
 const formatFileName = (name) => {
@@ -899,16 +900,16 @@ const renderFinancialTab = (tab, container) => {
     } else if (tab === 'expense') {
         container.innerHTML = `
             <div class="flex justify-between items-center mb-6">
-                <h3 class="text-xl font-semibold text-gray-700">Registro de Despesas</h3>
+                <h3 class="text-xl font-semibold text-gray-700">Registro de Despesas (Contas a Pagar)</h3>
                 <button id="add-expense-btn" class="py-2 px-4 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg transition duration-200 shadow-md flex items-center justify-center">
                     <i class='bx bx-minus-circle text-xl mr-2'></i> Registrar Despesa
                 </button>
             </div>
 
             <div class="grid grid-cols-3 gap-4 mb-6">
-                <div class="p-4 bg-red-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Total Despesas Mês</p><p class="text-2xl font-bold text-red-800" id="total-expense">${formatCurrency(0)}</p></div>
-                <div class="p-4 bg-yellow-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Próximo Vencimento</p><p class="text-2xl font-bold text-yellow-800" id="next-due-date">N/A</p></div>
-                <div class="p-4 bg-gray-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Contas Abertas</p><p class="text-2xl font-bold text-gray-800" id="open-expense-count">0</p></div>
+                <div class="p-4 bg-red-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Total Despesas Abertas</p><p class="text-2xl font-bold text-red-800" id="total-expense-open">${formatCurrency(0)}</p></div>
+                <div class="p-4 bg-green-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Próximo Vencimento</p><p class="text-2xl font-bold text-green-800" id="next-due-date">N/A</p></div>
+                <div class="p-4 bg-gray-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Total Pago no Mês</p><p class="text-2xl font-bold text-gray-800" id="paid-this-month">${formatCurrency(0)}</p></div>
             </div>
 
             <div class="overflow-x-auto bg-gray-50 rounded-xl shadow-inner border border-gray-200">
@@ -916,10 +917,10 @@ const renderFinancialTab = (tab, container) => {
                     <thead class="bg-gray-200">
                         <tr>
                             <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Vencimento</th>
+                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Fornecedor</th>
                             <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Nota/Ref</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Descrição</th>
                             <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Valor</th>
-                            <th class="px-6 py-3 text-right text-xs font-bold text-gray-600 uppercase">Ações</th>
+                            <th class="px-6 py-3 text-right text-xs font-bold text-gray-600 uppercase">Status/Ações</th>
                         </tr>
                     </thead>
                     <tbody id="expense-table-body" class="bg-white divide-y divide-gray-200">
@@ -1529,11 +1530,174 @@ const updateReceivableStatus = async (receivableId, newStatus) => {
 
 // --- Funções CRUD Despesas (Expense) ---
 let expenses = [];
+let expensePurchasedItemsCache = {}; // NOVO: Cache para itens comprados por despesa
+
+// NOVO MODAL: Para gerenciar os itens comprados (compra de estoque)
+const openItemsPurchaseModal = (expense) => {
+    const modalTitle = `Itens Comprados: ${expense.ref || 'Despesa Sem Ref'}`;
+    
+    // Tenta carregar os itens comprados para esta despesa
+    const itemsPurchased = expensePurchasedItemsCache[expense.id] || [];
+    
+    const itemsListHTML = itemsPurchased.length > 0 ? itemsPurchased.map(i => `
+        <li class="flex justify-between items-center py-2 border-b">
+            <span>${i.name}</span>
+            <span class="font-semibold">${i.quantityPurchased} ${i.unit} (Custo: ${formatCurrency(i.cost)})</span>
+        </li>
+    `).join('') : '<p class="italic text-gray-500">Nenhum item comprado registrado. Adicione um abaixo.</p>';
+    
+    // Opções de estoque para adicionar (apenas o nome e a unidade do item de estoque existente)
+    const stockOptions = stockItems.map(item => 
+        `<option value="${item.id}" data-unit="${item.unit}" data-cost="${item.cost}">
+            ${item.name} (${item.unit})
+        </option>`
+    ).join('');
+
+    document.getElementById('modal-title').textContent = modalTitle;
+    document.getElementById('modal-body').innerHTML = `
+        <div class="space-y-4">
+            <h4 class="text-lg font-bold text-red-700">Itens Registrados nesta Despesa:</h4>
+            <ul class="bg-gray-50 p-4 rounded-lg list-none divide-y" id="purchased-items-list">
+                ${itemsListHTML}
+            </ul>
+
+            <h4 class="text-lg font-bold text-red-700 mt-6">Registrar Compra (Atualiza Estoque):</h4>
+            <form id="add-purchase-form" class="space-y-3 p-4 border rounded-lg bg-white">
+                <input type="hidden" id="purchase-expense-id" value="${expense.id}">
+                <div class="grid grid-cols-4 gap-3">
+                    <div class="col-span-2">
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Material</label>
+                        <select id="purchase-material-id" required class="w-full p-3 border border-gray-300 rounded-lg">
+                            <option value="">Selecione o Material...</option>
+                            ${stockOptions}
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Qtde Comprada</label>
+                        <input type="number" step="any" min="0" id="purchase-quantity" required class="w-full p-3 border border-gray-300 rounded-lg" placeholder="Qtde">
+                    </div>
+                     <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Custo Un (R$)</label>
+                        <input type="number" step="0.01" id="purchase-cost" required class="w-full p-3 border border-gray-300 rounded-lg" placeholder="R$">
+                    </div>
+                </div>
+                <button type="submit" class="w-full py-2 bg-red-600 hover:bg-red-700 text-white font-semibold rounded-lg transition duration-200">
+                    Registrar Compra e Atualizar Estoque
+                </button>
+            </form>
+        </div>
+        <div class="flex justify-end pt-4">
+            <button type="button" id="close-purchase-modal" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg">Fechar</button>
+        </div>
+    `;
+
+    // Carregar o cache inicial e adicionar listeners
+    loadExpensePurchasedItems(expense.id);
+    document.getElementById('add-purchase-form').addEventListener('submit', savePurchasedItem);
+    document.getElementById('close-purchase-modal').addEventListener('click', closeModal);
+    
+    openModal(modalTitle, 'max-w-3xl');
+};
+
+const loadExpensePurchasedItems = (expenseId) => {
+    // Listener para carregar e atualizar a lista de itens comprados em tempo real
+    const itemsRef = db.ref(getExpensePurchasedItemsPath(expenseId));
+    
+    itemsRef.on('value', snapshot => {
+        const itemsObject = snapshot.val();
+        let itemsList = [];
+        
+        if (itemsObject) {
+            Object.keys(itemsObject).forEach(key => {
+                itemsList.push({ id: key, ...itemsObject[key] });
+            });
+        }
+        
+        expensePurchasedItemsCache[expenseId] = itemsList;
+        
+        // Atualiza a UI do modal se ele estiver aberto
+        const listContainer = document.getElementById('purchased-items-list');
+        if (listContainer) {
+            listContainer.innerHTML = itemsList.length > 0 ? itemsList.map(i => `
+                <li class="flex justify-between items-center py-2 border-b">
+                    <span>${i.name}</span>
+                    <span class="font-semibold">${i.quantityPurchased} ${i.unit} (Custo Total: ${formatCurrency(i.cost * i.quantityPurchased)})</span>
+                </li>
+            `).join('') : '<p class="italic text-gray-500">Nenhum item comprado registrado. Adicione um abaixo.</p>';
+        }
+    });
+};
+
+const savePurchasedItem = async (e) => {
+    e.preventDefault();
+    const expenseId = document.getElementById('purchase-expense-id').value;
+    const materialSelect = document.getElementById('purchase-material-id');
+    const materialId = materialSelect.value;
+    const quantityPurchased = parseFloat(document.getElementById('purchase-quantity').value);
+    const unitCost = parseFloat(document.getElementById('purchase-cost').value);
+    
+    if (!materialId || quantityPurchased <= 0 || unitCost <= 0) {
+        showNotification("Preencha todos os campos de compra corretamente.", "error");
+        return;
+    }
+    
+    const selectedItem = stockItems.find(i => i.id === materialId);
+    if (!selectedItem) {
+        showNotification("Material não encontrado no estoque.", "error");
+        return;
+    }
+    
+    const purchaseData = {
+        materialId: materialId,
+        name: selectedItem.name,
+        unit: selectedItem.unit,
+        quantityPurchased: quantityPurchased,
+        cost: unitCost,
+        registeredAt: new Date().toISOString()
+    };
+    
+    try {
+        // 1. Salva o item comprado no nó da Despesa
+        await db.ref(getExpensePurchasedItemsPath(expenseId)).push(purchaseData);
+        
+        // 2. ATUALIZA O ESTOQUE (Adiciona a quantidade)
+        const stockRef = db.ref(getStockCollectionPath(currentUser.uid) + '/' + materialId);
+        const currentStock = await stockRef.once('value');
+        const currentData = currentStock.val();
+        
+        if (currentData) {
+            const newQuantity = currentData.quantity + quantityPurchased;
+            // Cálculo do novo Custo Médio Ponderado (simplificado: apenas atualiza a quantidade)
+            await stockRef.update({ 
+                quantity: newQuantity,
+                lastUpdated: new Date().toISOString()
+            });
+        }
+        
+        showNotification(`Compra de ${quantityPurchased} ${selectedItem.unit} de ${selectedItem.name} registrada e estoque atualizado!`, 'success');
+        
+        // Limpa o formulário de consumo
+        document.getElementById('purchase-quantity').value = '';
+        document.getElementById('purchase-cost').value = '';
+        materialSelect.value = '';
+        
+    } catch (e) {
+        showNotification(`Erro ao registrar compra e atualizar estoque (RTDB): ${e.message}`, 'error');
+        console.error("Erro ao salvar compra (RTDB):", e);
+    }
+};
 
 const openExpenseFormModal = (item = null) => {
     const isEdit = !!item;
     const modalTitle = isEdit ? `Editar Despesa` : 'Registrar Despesa';
 
+    // Botão de itens comprados só aparece na edição ou após o cadastro inicial
+    const purchasedItemsButton = isEdit ? `
+        <button type="button" id="manage-purchase-btn" data-expense-id="${item.id}" class="py-2 px-4 bg-yellow-500 hover:bg-yellow-600 text-white font-bold rounded-lg transition duration-200 shadow-md">
+            <i class='bx bx-cart mr-2'></i> Gerenciar Itens Comprados
+        </button>
+    ` : '';
+    
     document.getElementById('modal-title').textContent = modalTitle;
     document.getElementById('modal-body').innerHTML = `
         <form id="expense-form" class="space-y-4">
@@ -1545,7 +1709,7 @@ const openExpenseFormModal = (item = null) => {
                     <input type="text" id="expense-ref" value="${isEdit ? item.ref : ''}" class="w-full p-3 border border-gray-300 rounded-lg" placeholder="Ex: NF 1234, Aluguel Setembro">
                 </div>
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Valor (R$)</label>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Valor Total (R$)</label>
                     <input type="number" step="0.01" id="expense-amount" value="${isEdit ? item.amount : ''}" required class="w-full p-3 border border-gray-300 rounded-lg">
                 </div>
             </div>
@@ -1566,9 +1730,12 @@ const openExpenseFormModal = (item = null) => {
                 <textarea id="expense-description" rows="2" required class="w-full p-3 border border-gray-300 rounded-lg resize-none">${isEdit ? item.description : ''}</textarea>
             </div>
             
-            <div class="flex justify-end space-x-3 pt-4">
-                <button type="button" id="form-cancel-btn" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg">Cancelar</button>
-                <button type="submit" class="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700">${isEdit ? 'Atualizar' : 'Registrar Despesa'}</button>
+            <div class="flex justify-between items-center pt-4">
+                ${purchasedItemsButton}
+                <div class="flex space-x-3">
+                    <button type="button" id="form-cancel-btn" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg">Cancelar</button>
+                    <button type="submit" class="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700">${isEdit ? 'Atualizar' : 'Registrar Despesa'}</button>
+                </div>
             </div>
         </form>
     `;
@@ -1576,6 +1743,13 @@ const openExpenseFormModal = (item = null) => {
     document.getElementById('expense-form').addEventListener('submit', saveExpense);
     document.getElementById('form-cancel-btn').addEventListener('click', closeModal);
     
+    if (isEdit) {
+         document.getElementById('manage-purchase-btn').addEventListener('click', (e) => {
+            e.stopPropagation();
+            openItemsPurchaseModal(item);
+        });
+    }
+
     openModal(modalTitle, 'max-w-xl');
 };
 
@@ -1591,7 +1765,9 @@ const saveExpense = async (e) => {
         amount: parseFloat(document.getElementById('expense-amount').value),
         dueDate: document.getElementById('expense-due-date').value,
         description: document.getElementById('expense-description').value,
-        registeredAt: new Date().toISOString()
+        registeredAt: new Date().toISOString(),
+        // NOVO STATUS: Facilita controle de Contas a Pagar
+        status: 'Aberto' 
     };
 
     try {
@@ -1603,9 +1779,12 @@ const saveExpense = async (e) => {
             const newRef = expenseRef.push();
             itemData.id = newRef.key;
             await newRef.set(itemData);
+            // Se for um novo registro, reabre o modal no modo edição para gerenciar a compra
+            closeModal();
+            openExpenseFormModal(itemData);
         }
 
-        closeModal();
+        if (isEdit) closeModal();
         showNotification(`Despesa registrada com sucesso!`, 'success');
     } catch (e) {
         showNotification(`Erro ao salvar Despesa (RTDB): ${e.message}`, 'error');
@@ -1621,26 +1800,31 @@ const loadExpenses = () => {
     expenseRef.on('value', snapshot => {
         const itemsObject = snapshot.val();
         let itemsList = [];
-        let totalExpense = 0;
-        let openCount = 0;
+        let totalExpenseOpen = 0;
+        let totalPaidThisMonth = 0;
         let nextDueDate = "N/A";
         
         const today = new Date().toISOString().substring(0, 10);
+        const currentMonth = new Date().getMonth();
+        const currentYear = new Date().getFullYear();
 
         if (itemsObject) {
             Object.keys(itemsObject).forEach(key => {
                 const item = { id: key, ...itemsObject[key] };
                 
-                totalExpense += item.amount;
-                
-                // Contagem de contas abertas (não pagas - simples)
-                // Usaremos a lógica de vencimento simples: se venceu ou vence hoje e não está marcada como paga (status implícito)
-                if (item.dueDate >= today) {
-                    openCount++;
+                if (item.status === 'Aberto') {
+                    totalExpenseOpen += item.amount;
                 }
                 
-                // Próximo Vencimento
-                if (item.dueDate >= today && (nextDueDate === "N/A" || item.dueDate < nextDueDate)) {
+                if (item.status === 'Pago') {
+                     const paidDate = new Date(item.paidDate);
+                     if (paidDate.getMonth() === currentMonth && paidDate.getFullYear() === currentYear) {
+                         totalPaidThisMonth += item.amount;
+                     }
+                }
+                
+                // Próximo Vencimento (apenas abertas)
+                if (item.status === 'Aberto' && item.dueDate >= today && (nextDueDate === "N/A" || item.dueDate < nextDueDate)) {
                     nextDueDate = item.dueDate;
                 }
                 
@@ -1649,17 +1833,17 @@ const loadExpenses = () => {
         }
         
         expenses = itemsList;
-        renderExpenseTable(itemsList, totalExpense, openCount, nextDueDate);
+        renderExpenseTable(itemsList, totalExpenseOpen, totalPaidThisMonth, nextDueDate);
     }, e => showNotification(`Erro ao carregar Despesas (RTDB): ${e.message}`, 'error'));
 };
 
-const renderExpenseTable = (items, totalExpense, openCount, nextDueDate) => {
+const renderExpenseTable = (items, totalExpenseOpen, totalPaidThisMonth, nextDueDate) => {
     const tbody = document.getElementById('expense-table-body');
     if (!tbody) return;
 
     // Atualiza KPIs
-    document.getElementById('total-expense').textContent = formatCurrency(totalExpense);
-    document.getElementById('open-expense-count').textContent = openCount;
+    document.getElementById('total-expense-open').textContent = formatCurrency(totalExpenseOpen);
+    document.getElementById('paid-this-month').textContent = formatCurrency(totalPaidThisMonth);
     document.getElementById('next-due-date').textContent = nextDueDate;
 
     if (items.length === 0) {
@@ -1670,16 +1854,31 @@ const renderExpenseTable = (items, totalExpense, openCount, nextDueDate) => {
     items.sort((a, b) => new Date(b.dueDate) - new Date(a.dueDate)); // Ordena por data de vencimento (reversa)
 
     tbody.innerHTML = items.map(t => {
-        let statusClass = 'text-red-600 font-bold';
+        const isPaid = t.status === 'Pago';
+        let statusClass = 'bg-red-100 text-red-800';
+        if (isPaid) statusClass = 'bg-green-100 text-green-800';
         
+        const actionButton = isPaid ? 
+             `<button data-action="unpay" data-id="${t.id}" class="p-2 text-gray-400 hover:text-gray-600" title="Marcar como Aberta">
+                <i class='bx bx-undo text-xl'></i>
+            </button>` :
+            `<button data-action="pay" data-id="${t.id}" class="p-2 text-green-600 hover:bg-green-100 rounded-full" title="Marcar como Paga">
+                <i class='bx bx-check-square text-xl'></i>
+            </button>`;
+
         return `
             <tr class="hover:bg-gray-50 transition-colors">
                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${t.dueDate}</td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">${t.supplier || 'N/A'}</td>
                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">${t.ref || 'N/A'}</td>
-                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">${t.description}</td>
-                <td class="px-6 py-4 whitespace-nowrap text-sm ${statusClass}">${formatCurrency(t.amount)}</td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm font-bold text-red-600">${formatCurrency(t.amount)}</td>
                 <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                    <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${statusClass} mr-2">${t.status}</span>
                     <div class="inline-flex space-x-2">
+                         <button data-action="manage-purchase-table" data-id="${t.id}" class="p-2 text-yellow-500 hover:bg-yellow-100 rounded-full" title="Gerenciar Itens Comprados">
+                            <i class='bx bx-cart text-xl'></i>
+                        </button>
+                        ${actionButton}
                         <button data-action="edit-expense" data-id="${t.id}" class="p-2 text-indigo-600 hover:bg-indigo-100 rounded-full" title="Editar">
                             <i class='bx bxs-edit-alt text-xl'></i>
                         </button>
@@ -1701,6 +1900,9 @@ const renderExpenseTable = (items, totalExpense, openCount, nextDueDate) => {
         switch (btn.dataset.action) {
             case 'edit-expense': openExpenseFormModal(item); break;
             case 'delete-expense': deleteExpense(expenseId, item.description); break;
+            case 'pay': updateExpenseStatus(expenseId, 'Pago'); break;
+            case 'unpay': updateExpenseStatus(expenseId, 'Aberto'); break;
+            case 'manage-purchase-table': openItemsPurchaseModal(item); break;
         }
     });
 };
@@ -1714,6 +1916,18 @@ const deleteExpense = async (expenseId, description) => {
     } catch (e) {
         showNotification(`Erro ao excluir Despesa (RTDB): ${e.message}`, 'error');
         console.error("Erro ao excluir Despesa (RTDB):", e);
+    }
+};
+
+const updateExpenseStatus = async (expenseId, newStatus) => {
+    try {
+        await db.ref(getExpensePath(currentUser.uid) + '/' + expenseId).update({
+            status: newStatus,
+            paidDate: newStatus === 'Pago' ? new Date().toISOString() : null
+        });
+        showNotification(`Despesa marcada como ${newStatus}!`, 'success');
+    } catch (e) {
+        showNotification(`Erro ao atualizar status (RTDB): ${e.message}`, 'error');
     }
 };
 
