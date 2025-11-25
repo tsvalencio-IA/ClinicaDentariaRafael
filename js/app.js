@@ -1,5 +1,6 @@
 // ==================================================================
 // MÓDULO PRINCIPAL - DENTISTA INTELIGENTE (ESTABILIDADE MÁXIMA)
+// CORREÇÃO DEFINITIVA DO SYNTAXERROR: REMOÇÃO DE DECLARAÇÕES 'LET' DE LISTAS
 // ==================================================================
 (function() {
     
@@ -7,11 +8,11 @@
 const config = window.AppConfig;
 const appId = config.APP_ID; 
 
-db, auth;
-currentUser = null;
-currentView = 'dashboard';
-isLoginMode = true; 
-// VARIÁVEIS DE DADOS GLOBAIS (AGORA SÃO LOCAIS À IIFE E INICIALIZADAS ABAIXO)
+let db, auth;
+let currentUser = null;
+let currentView = 'dashboard';
+let isLoginMode = true; 
+// VARIÁVEIS DE DADOS GLOBAIS DENTRO DO ESCOPO ISOLADO (SEM 'let' para evitar SyntaxError)
 allPatients = []; 
 receivables = []; 
 stockItems = []; 
@@ -1652,10 +1653,6 @@ const updateReceivableStatus = async (receivableId, newStatus) => {
 };
 
 // --- Funções CRUD Despesas (Expense) ---
-let expenses = [];
-let expensePurchasedItemsCache = {}; // NOVO: Cache para itens comprados por despesa
-
-// NOVO MODAL: Para gerenciar os itens comprados (compra de estoque)
 const openItemsPurchaseModal = (expense) => {
     const modalTitle = `Itens Comprados: ${expense.ref || 'Despesa Sem Ref'}`;
     
@@ -2107,7 +2104,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const authForm = document.getElementById('auth-form');
     if (authForm) authForm.addEventListener('submit', handleAuthSubmit);
     const toggleBtn = document.getElementById('toggle-auth-mode');
-    if (toggleBtn) toggleBtn.addEventListener('click', toggleAuthMode);
+    if (toggleBtn) toggleAuthMode.addEventListener('click', toggleAuthMode);
 
     // 5. Listener geral para navegação no corpo principal (após o DOM estar pronto)
     // Opcional, mas útil para botões dinâmicos.
