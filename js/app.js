@@ -1,80 +1,76 @@
 // ==================================================================
-// MÓDULO PRINCIPAL - DENTISTA INTELIGENTE (VERSÃO SÊNIOR INTEGRADA)
+// MÓDULO PRINCIPAL - DENTISTA INTELIGENTE (VERSÃO SÊNIOR CORRIGIDA)
 // ==================================================================
 (function() {
     
-    // 1. CONFIGURAÇÕES E ESTADO
+    // 1. CONFIGURAÇÕES GLOBAIS
     var config = window.AppConfig;
     var appId = config ? config.APP_ID : 'dentista-inteligente-app';
     
+    // Variáveis de Estado (VAR para estabilidade máxima)
     var db, auth;
     var currentUser = null;
     var currentView = 'dashboard';
     var isLoginMode = true; 
     
-    // Caches de Dados (VAR para evitar travamento de redeclaração)
+    // Listas de Dados (Caches Locais)
     var allPatients = []; 
     var receivables = []; 
     var stockItems = []; 
     var expenses = []; 
     
     // ==================================================================
-    // 2. UTILITÁRIOS E FORMATAÇÃO
+    // 2. FUNÇÕES AUXILIARES
     // ==================================================================
     
     function getAdminPath(uid, path) { return 'artifacts/' + appId + '/users/' + uid + '/' + path; }
     function getStockPath(uid) { return getAdminPath(uid, 'stock'); }
     function getFinancePath(uid, type) { return getAdminPath(uid, 'finance/' + type); }
-    function getRecMatPath(recId) { return getFinancePath(currentUser.uid, 'receivable') + '/' + recId + '/materials'; }
-    function getExpItemsPath(expId) { return getFinancePath(currentUser.uid, 'expenses') + '/' + expId + '/purchasedItems'; }
-
-    function formatCurrency(value) { return 'R$ ' + parseFloat(value || 0).toFixed(2).replace('.', ','); }
+    
+    function formatCurrency(value) {
+        return 'R$ ' + parseFloat(value || 0).toFixed(2).replace('.', ',');
+    }
 
     function formatDateTime(iso) {
         if(!iso) return '-';
         var d = new Date(iso);
-        return isNaN(d) ? '-' : d.toLocaleDateString('pt-BR');
-    }
-    
-    // Mapeamento de Formas de Pagamento com Ícones
-    function getPaymentBadge(method) {
-        var icons = {
-            'pix': '<span class="text-teal-600 bg-teal-100 px-2 py-1 rounded text-xs flex items-center w-fit"><i class="bx bx-qr mr-1"></i> Pix</span>',
-            'credit': '<span class="text-blue-600 bg-blue-100 px-2 py-1 rounded text-xs flex items-center w-fit"><i class="bx bx-credit-card mr-1"></i> Crédito</span>',
-            'debit': '<span class="text-cyan-600 bg-cyan-100 px-2 py-1 rounded text-xs flex items-center w-fit"><i class="bx bx-credit-card-front mr-1"></i> Débito</span>',
-            'cash': '<span class="text-green-600 bg-green-100 px-2 py-1 rounded text-xs flex items-center w-fit"><i class="bx bx-money mr-1"></i> Dinheiro</span>',
-            'convenio': '<span class="text-purple-600 bg-purple-100 px-2 py-1 rounded text-xs flex items-center w-fit"><i class="bx bx-id-card mr-1"></i> Convênio</span>',
-            'transfer': '<span class="text-gray-600 bg-gray-100 px-2 py-1 rounded text-xs flex items-center w-fit"><i class="bx bxs-bank mr-1"></i> TED/DOC</span>'
-        };
-        return icons[method] || '<span class="text-gray-500 text-xs">-</span>';
+        return isNaN(d) ? '-' : d.toLocaleDateString('pt-BR') + ' ' + d.toLocaleTimeString('pt-BR', {hour: '2-digit', minute:'2-digit'});
     }
 
     // ==================================================================
-    // 3. SISTEMA DE LOGIN BLINDADO
+    // 3. AUTENTICAÇÃO E INICIALIZAÇÃO
     // ==================================================================
     
     function initializeFirebase() {
-        if (!firebase.apps.length) firebase.initializeApp(config.firebaseConfig);
+        if (!firebase.apps.length) {
+            firebase.initializeApp(config.firebaseConfig);
+        }
         db = firebase.database();
         auth = firebase.auth();
-        setupAuth();
+        setupAuthStateListener();
     }
 
-    function setupAuth() {
+    function setupAuthStateListener() {
         auth.onAuthStateChanged(function(user) {
             if (user) {
-                // Verifica se é admin ou tem perfil
-                var ref = db.ref('artifacts/' + appId + '/users/' + user.uid + '/profile');
-                ref.once('value').then(function(s) {
-                    var p = s.val();
-                    if ((p && p.role === 'dentist') || user.email === 'admin@ts.com') {
+                var userRef = db.ref('artifacts/' + appId + '/users/' + user.uid + '/profile');
+                userRef.once('value').then(function(snapshot) {
+                    var profile = snapshot.val();
+                    
+                    // Libera acesso para dentista ou admin master
+                    if ((profile && profile.role === 'dentist') || user.email === 'admin@ts.com') {
                         currentUser = { uid: user.uid, email: user.email };
-                        if (!p && user.email === 'admin@ts.com') {
-                            ref.set({ email: user.email, role: 'dentist', registeredAt: new Date().toISOString() });
+                        
+                        // Auto-correção do perfil admin
+                        if (!profile && user.email === 'admin@ts.com') {
+                            userRef.set({ email: user.email, role: 'dentist', registeredAt: new Date().toISOString() });
                         }
+                        
+                        // Carregamento Inicial de Dados para Cache
+                        loadInitialData();
                         showUI();
                     } else {
-                        alert("Acesso restrito.");
+                        alert("Acesso restrito a dentistas.");
                         auth.signOut();
                     }
                 });
@@ -85,19 +81,41 @@
         });
     }
     
+    function loadInitialData() {
+        // Carrega pacientes para cache
+        db.ref(getAdminPath(currentUser.uid, 'patients')).on('value', function(s) {
+            allPatients = [];
+            if(s.exists()) s.forEach(function(c) { var p = c.val(); p.id = c.key; allPatients.push(p); });
+            // Atualiza UI se estiver na tela de pacientes
+            if(currentView === 'patients') renderPatientManager(document.getElementById('main-content'));
+            // Atualiza Dashboard KPI
+             if(document.getElementById('dash-pat')) document.getElementById('dash-pat').textContent = allPatients.length;
+        });
+
+        // Carrega estoque para cache
+        db.ref(getStockPath(currentUser.uid)).on('value', function(s) {
+            stockItems = [];
+            if(s.exists()) s.forEach(function(c) { var i = c.val(); i.id = c.key; stockItems.push(i); });
+            if(currentView === 'financials') renderStockView(); // Re-renderiza se estiver na aba
+             // Atualiza Dashboard KPI
+            if(document.getElementById('dash-stk')) document.getElementById('dash-stk').textContent = stockItems.length;
+        });
+    }
+    
     function showLoginScreen() {
         document.getElementById('login-screen').classList.remove('hidden');
         document.getElementById('app-container').classList.add('hidden');
         
-        // Reset de listeners (Evita duplicação ao relogar)
-        var form = document.getElementById('auth-form');
-        var newForm = form.cloneNode(true);
-        form.parentNode.replaceChild(newForm, form);
-        newForm.addEventListener('submit', handleAuth);
+        // Reset de listeners
+        var oldForm = document.getElementById('auth-form');
+        var newForm = oldForm.cloneNode(true);
+        oldForm.parentNode.replaceChild(newForm, oldForm);
+        newForm.addEventListener('submit', handleAuthSubmit);
         
-        var toggle = document.getElementById('toggle-auth-mode');
-        var newToggle = toggle.cloneNode(true);
-        toggle.parentNode.replaceChild(newToggle, toggle);
+        var toggleBtn = document.getElementById('toggle-auth-mode');
+        var newToggle = toggleBtn.cloneNode(true);
+        toggleBtn.parentNode.replaceChild(newToggle, toggleBtn);
+        
         newToggle.addEventListener('click', function() {
             isLoginMode = !isLoginMode;
             document.getElementById('auth-submit-btn').textContent = isLoginMode ? 'Entrar' : 'Cadastrar';
@@ -112,27 +130,31 @@
         navigateTo('dashboard');
     }
 
-    async function handleAuth(e) {
+    async function handleAuthSubmit(e) {
         e.preventDefault();
-        var em = document.getElementById('auth-email').value;
-        var pw = document.getElementById('auth-password').value;
+        var email = document.getElementById('auth-email').value;
+        var password = document.getElementById('auth-password').value;
         var btn = document.getElementById('auth-submit-btn');
-        var err = document.getElementById('auth-error-message');
+        var errorEl = document.getElementById('auth-error-message');
         
-        btn.disabled = true; btn.textContent = 'Aguarde...'; err.textContent = '';
+        btn.disabled = true;
+        btn.textContent = 'Processando...';
+        errorEl.textContent = '';
         
         try {
-            if (isLoginMode) await auth.signInWithEmailAndPassword(em, pw);
-            else {
-                var cred = await auth.createUserWithEmailAndPassword(em, pw);
+            if (isLoginMode) {
+                await auth.signInWithEmailAndPassword(email, password);
+            } else {
+                var cred = await auth.createUserWithEmailAndPassword(email, password);
                 await db.ref('artifacts/' + appId + '/users/' + cred.user.uid + '/profile').set({
-                    email: em, role: 'dentist', registeredAt: new Date().toISOString()
+                    email: email, role: 'dentist', registeredAt: new Date().toISOString()
                 });
             }
         } catch (error) {
             console.error(error);
-            err.textContent = "Erro: " + error.message;
-            btn.disabled = false; btn.textContent = isLoginMode ? 'Entrar' : 'Cadastrar';
+            errorEl.textContent = "Erro: " + error.message;
+            btn.disabled = false;
+            btn.textContent = isLoginMode ? 'Entrar' : 'Cadastrar';
         }
     }
 
@@ -151,8 +173,11 @@
         else if (view === 'financials') renderFinancialManager(content);
         
         document.querySelectorAll('#nav-menu button').forEach(function(btn) {
-            var active = btn.dataset.view === view;
-            btn.className = active ? 'flex items-center p-3 rounded-xl w-full text-left bg-indigo-600 text-white shadow-lg' : 'flex items-center p-3 rounded-xl w-full text-left text-indigo-200 hover:bg-indigo-700 hover:text-white';
+            if (btn.dataset.view === view) {
+                btn.className = 'flex items-center p-3 rounded-xl w-full text-left bg-indigo-600 text-white shadow-lg';
+            } else {
+                btn.className = 'flex items-center p-3 rounded-xl w-full text-left text-indigo-200 hover:bg-indigo-700 hover:text-white';
+            }
         });
     }
     
@@ -178,17 +203,19 @@
             <div class="p-8 bg-white shadow-2xl rounded-2xl border border-indigo-100">
                 <h2 class="text-3xl font-bold text-indigo-800 mb-6"><i class='bx bxs-dashboard'></i> Visão Geral</h2>
                 <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-                    <div class="p-4 bg-indigo-50 rounded-lg border-l-4 border-indigo-500"><p class="text-gray-600">Pacientes</p><h3 class="text-2xl font-bold text-indigo-800" id="dash-pat">...</h3></div>
-                    <div class="p-4 bg-green-50 rounded-lg border-l-4 border-green-500"><p class="text-gray-600">Estoque</p><h3 class="text-2xl font-bold text-green-800" id="dash-stk">...</h3></div>
-                    <div class="p-4 bg-yellow-50 rounded-lg border-l-4 border-yellow-500"><p class="text-gray-600">A Receber</p><h3 class="text-2xl font-bold text-yellow-800" id="dash-rec">...</h3></div>
-                    <div class="p-4 bg-red-50 rounded-lg border-l-4 border-red-500"><p class="text-gray-600">A Pagar</p><h3 class="text-2xl font-bold text-red-800" id="dash-exp">...</h3></div>
+                    <div class="p-4 bg-indigo-100 rounded-lg"><p class="text-gray-600">Pacientes</p><h3 class="text-2xl font-bold text-indigo-800" id="dash-pat">${allPatients.length}</h3></div>
+                    <div class="p-4 bg-green-100 rounded-lg"><p class="text-gray-600">Estoque</p><h3 class="text-2xl font-bold text-green-800" id="dash-stk">${stockItems.length}</h3></div>
+                    <div class="p-4 bg-yellow-100 rounded-lg"><p class="text-gray-600">A Receber</p><h3 class="text-2xl font-bold text-yellow-800" id="dash-rec">R$ 0,00</h3></div>
+                    <div class="p-4 bg-red-100 rounded-lg"><p class="text-gray-600">A Pagar</p><h3 class="text-2xl font-bold text-red-800" id="dash-exp">R$ 0,00</h3></div>
+                </div>
+                <div class="border p-4 rounded-xl bg-gray-50">
+                    <h3 class="font-bold text-indigo-800 mb-2">Instruções da IA</h3>
+                    <textarea id="brain-input" class="w-full p-2 border rounded" rows="2"></textarea>
+                    <button id="save-brain-btn" class="mt-2 bg-indigo-600 text-white px-4 py-1 rounded text-sm">Salvar</button>
                 </div>
             </div>`;
             
-        // Carregamento de Dados para KPIs
-        db.ref(getAdminPath(currentUser.uid, 'patients')).on('value', function(s) { if(document.getElementById('dash-pat')) document.getElementById('dash-pat').textContent = s.numChildren(); });
-        db.ref(getStockPath(currentUser.uid)).on('value', function(s) { if(document.getElementById('dash-stk')) document.getElementById('dash-stk').textContent = s.numChildren(); });
-        
+        // Listeners de Finanças para KPIs
         db.ref(getFinancePath(currentUser.uid, 'receivable')).on('value', s => {
             let total = 0; s.forEach(x => { if(x.val().status !== 'Recebido') total += parseFloat(x.val().amount || 0); });
             if(document.getElementById('dash-rec')) document.getElementById('dash-rec').textContent = formatCurrency(total);
@@ -198,18 +225,23 @@
             let total = 0; s.forEach(x => { if(x.val().status !== 'Pago') total += parseFloat(x.val().amount || 0); });
             if(document.getElementById('dash-exp')) document.getElementById('dash-exp').textContent = formatCurrency(total);
         });
+        
+        // Carregar IA
+        var brainRef = db.ref(getAdminPath(currentUser.uid, 'aiConfig/directives'));
+        brainRef.once('value', function(s) { if(s.exists()) document.getElementById('brain-input').value = s.val().promptDirectives; });
+        document.getElementById('save-brain-btn').onclick = function() {
+            brainRef.update({ promptDirectives: document.getElementById('brain-input').value });
+            alert("IA Atualizada!");
+        };
     }
 
-    // ==================================================================
-    // 6. GESTÃO DE PACIENTES
-    // ==================================================================
-    
+    // --- GESTÃO DE PACIENTES ---
     function renderPatientManager(container) {
         container.innerHTML = `
             <div class="p-8 bg-white shadow-lg rounded-2xl">
                 <div class="flex justify-between mb-6">
                     <h2 class="text-2xl font-bold text-indigo-800">Pacientes</h2>
-                    <button onclick="openPatientModal()" class="bg-indigo-600 text-white px-4 py-2 rounded shadow hover:bg-indigo-700">Novo Paciente</button>
+                    <button onclick="openPatientModal()" class="bg-indigo-600 text-white px-4 py-2 rounded shadow">Novo Paciente</button>
                 </div>
                 <div class="overflow-x-auto">
                     <table class="w-full text-left">
@@ -219,36 +251,26 @@
                 </div>
             </div>`;
         
-        window.openPatientModal = openPatientModal; // Expor
-
-        db.ref(getAdminPath(currentUser.uid, 'patients')).on('value', function(snap) {
-            var tbody = document.getElementById('patient-list-body');
-            if(!tbody) return;
-            tbody.innerHTML = '';
-            allPatients = [];
-            
-            var data = snap.val();
-            if(data) {
-                Object.keys(data).forEach(function(k) {
-                    var p = data[k];
-                    p.id = k;
-                    allPatients.push(p);
-                    tbody.innerHTML += `
-                        <tr class="border-b hover:bg-gray-50">
-                            <td class="p-3 font-medium">${p.name}</td>
-                            <td class="p-3">${p.treatmentType || '-'}</td>
-                            <td class="p-3 text-right">
-                                <button onclick="openRecModal('${k}')" class="text-green-600 mr-3" title="Novo Tratamento/Cobrança"><i class='bx bx-money text-xl'></i></button>
-                                <button onclick="deletePatient('${k}')" class="text-red-500" title="Excluir"><i class='bx bx-trash text-xl'></i></button>
-                            </td>
-                        </tr>`;
-                });
-            } else {
-                tbody.innerHTML = '<tr><td colspan="3" class="p-4 text-center text-gray-400">Nenhum paciente cadastrado.</td></tr>';
-            }
-        });
+        // Renderiza tabela com dados do cache
+        var tbody = document.getElementById('patient-list-body');
+        if(allPatients.length > 0) {
+            allPatients.forEach(function(p) {
+                tbody.innerHTML += `
+                    <tr class="border-b hover:bg-gray-50">
+                        <td class="p-3 font-medium">${p.name}</td>
+                        <td class="p-3">${p.treatmentType || '-'}</td>
+                        <td class="p-3 text-right">
+                            <button onclick="openJournal('${p.id}')" class="text-cyan-600 mr-3" title="Prontuário"><i class='bx bx-book-heart text-xl'></i></button>
+                            <button onclick="deletePatient('${p.id}')" class="text-red-500" title="Excluir"><i class='bx bx-trash text-xl'></i></button>
+                        </td>
+                    </tr>`;
+            });
+        } else {
+             tbody.innerHTML = '<tr><td colspan="3" class="p-4 text-center text-gray-400">Nenhum paciente.</td></tr>';
+        }
     }
 
+    // Expondo funções globais para onclick
     window.openPatientModal = function() {
         var html = `
             <form id="form-pat" class="space-y-3">
@@ -276,8 +298,82 @@
         if(confirm("Tem certeza?")) db.ref(getAdminPath(currentUser.uid, 'patients') + '/' + id).remove();
     };
 
+    // --- DIÁRIO DO PACIENTE (INTEGRAÇÃO FINANCEIRA) ---
+    window.openJournal = function(id) {
+        var p = allPatients.find(function(x){ return x.id === id; });
+        if(!p) return;
+        
+        var html = `
+            <div class="bg-blue-50 p-3 rounded mb-3 text-sm">
+                <b>Meta:</b> ${p.treatmentGoal || 'Não definido'}
+            </div>
+            <div class="mb-4 border p-2 rounded max-h-40 overflow-y-auto">
+                <h5 class="font-bold text-xs text-gray-500 mb-1">PROCEDIMENTOS E MATERIAIS</h5>
+                <div id="journal-fin-list" class="text-sm">Carregando histórico...</div>
+            </div>
+            <div id="chat-area" class="bg-gray-100 p-2 h-48 overflow-y-auto flex flex-col gap-2 mb-2 rounded"></div>
+            <div class="flex gap-2">
+                <input id="chat-msg" class="flex-grow border p-2 rounded" placeholder="Evolução...">
+                <button onclick="sendChat('${id}', 'Dentista')" class="bg-indigo-600 text-white px-3 rounded">Enviar</button>
+                <button onclick="askAI('${id}')" class="bg-purple-600 text-white px-3 rounded" title="IA"><i class='bx bxs-magic-wand'></i></button>
+            </div>
+        `;
+        openModal(`Prontuário: ${p.name}`, html, 'max-w-3xl');
+
+        // Carrega Financeiro no Diário
+        db.ref(getFinancePath(currentUser.uid, 'receivable')).orderByChild('patientId').equalTo(id).once('value', async function(s) {
+            var div = document.getElementById('journal-fin-list');
+            if(!div) return;
+            div.innerHTML = '';
+            
+            if(s.exists()) {
+                s.forEach(function(snap) {
+                    var item = snap.val();
+                    div.innerHTML += `<div class="border-b py-1 flex justify-between"><span>${item.description}</span> <span class="font-bold">${formatCurrency(item.amount)}</span></div>`;
+                    // Busca materiais (simplificado para não aninhar demais)
+                    db.ref(getAdminPath(currentUser.uid, `finance/receivable/${snap.key}/materials`)).once('value', function(mSnap) {
+                        if(mSnap.exists()) {
+                            var mats = [];
+                            mSnap.forEach(function(m) { mats.push(`${m.val().quantityUsed} ${m.val().name}`); });
+                            div.innerHTML += `<div class="text-xs text-gray-500 ml-2">Materiais: ${mats.join(', ')}</div>`;
+                        }
+                    });
+                });
+            } else {
+                div.innerHTML = '<i class="text-gray-400">Sem procedimentos.</i>';
+            }
+        });
+
+        // Carrega Chat
+        var chatRef = db.ref('artifacts/' + appId + '/patients/' + id + '/journal');
+        chatRef.on('child_added', function(s) {
+            var m = s.val();
+            var div = document.createElement('div');
+            div.className = `p-2 rounded text-sm max-w-[85%] ${m.author === 'IA' ? 'bg-purple-100 self-start' : 'bg-white border self-end'}`;
+            div.innerHTML = `<b>${m.author}:</b> ${m.text}`;
+            var area = document.getElementById('chat-area');
+            if(area) { area.appendChild(div); area.scrollTop = area.scrollHeight; }
+        });
+    };
+
+    window.sendChat = function(pid, author, txt) {
+        var msg = txt || document.getElementById('chat-msg').value;
+        if(!msg) return;
+        db.ref('artifacts/' + appId + '/patients/' + pid + '/journal').push({
+            text: msg, author: author, timestamp: new Date().toISOString()
+        });
+        if(!txt) document.getElementById('chat-msg').value = '';
+    };
+
+    window.askAI = async function(pid) {
+        var p = allPatients.find(function(x){ return x.id === pid; });
+        var prompt = `Paciente: ${p.name}. Meta: ${p.treatmentGoal}. Sugira a próxima etapa.`;
+        var resp = await window.callGeminiAPI(prompt, "Gere sugestão clínica.");
+        window.sendChat(pid, 'IA', resp);
+    };
+
     // ==================================================================
-    // 7. FINANCEIRO E ESTOQUE (INTEGRADO)
+    // 6. FINANCEIRO E ESTOQUE
     // ==================================================================
 
     function renderFinancialManager(container) {
@@ -313,27 +409,21 @@
                 </table>
             </div>`;
         
-        db.ref(getStockPath(currentUser.uid)).on('value', function(s) {
-            var tb = document.getElementById('stock-table-body');
-            if(!tb) return;
-            tb.innerHTML = '';
-            stockItems = [];
-            if(s.exists()) {
-                var data = s.val();
-                Object.keys(data).forEach(function(k) {
-                    var i = data[k];
-                    i.id = k;
-                    stockItems.push(i);
-                    tb.innerHTML += `
-                        <tr class="border-b">
-                            <td class="p-2 font-medium">${i.name}</td>
-                            <td class="p-2">${i.quantity} ${i.unit}</td>
-                            <td class="p-2">${formatCurrency(i.cost)}</td>
-                            <td class="p-2"><button onclick="deleteStock('${k}')" class="text-red-400"><i class='bx bx-trash'></i></button></td>
-                        </tr>`;
-                });
-            } else { tb.innerHTML = '<tr><td colspan="4" class="p-3 text-center italic">Estoque vazio.</td></tr>'; }
-        });
+        // Usa o cache local de stockItems para renderizar rápido
+        var tb = document.getElementById('stock-table-body');
+        if(stockItems.length > 0) {
+            stockItems.forEach(function(i) {
+                tb.innerHTML += `
+                    <tr class="border-b">
+                        <td class="p-2 font-medium">${i.name}</td>
+                        <td class="p-2">${i.quantity} ${i.unit}</td>
+                        <td class="p-2">${formatCurrency(i.cost)}</td>
+                        <td class="p-2"><button onclick="deleteStock('${i.id}')" class="text-red-400"><i class='bx bx-trash'></i></button></td>
+                    </tr>`;
+            });
+        } else {
+            tb.innerHTML = '<tr><td colspan="4" class="p-3 text-center italic">Estoque vazio.</td></tr>';
+        }
     }
 
     // --- RECEITAS (COM BAIXA AUTOMÁTICA E FORMA DE PAGAMENTO) ---
@@ -351,9 +441,9 @@
             if(!list) return;
             list.innerHTML = '';
             if(s.exists()) {
-                var data = s.val();
-                Object.keys(data).forEach(function(k) {
-                    var r = data[k];
+                s.forEach(function(snap) {
+                    var r = snap.val();
+                    var k = snap.key;
                     var isPaid = r.status === 'Recebido';
                     var badge = isPaid ? `<span class="bg-green-100 text-green-800 text-xs px-2 rounded">Recebido</span>` : `<span class="bg-yellow-100 text-yellow-800 text-xs px-2 rounded">Aberto</span>`;
                     var action = isPaid ? '' : `<button onclick="settleTx('receivable', '${k}')" class="text-xs bg-green-500 text-white px-2 py-1 rounded hover:bg-green-600 ml-2" title="Receber"><i class='bx bx-check'></i></button>`;
@@ -361,13 +451,13 @@
                     list.innerHTML += `
                         <div class="p-3 border rounded flex justify-between items-center bg-white hover:shadow-sm transition">
                             <div>
-                                <div class="font-bold text-indigo-900">${r.patientName} ${getPaymentBadge(r.paymentMethod)}</div>
+                                <div class="font-bold text-indigo-900">${r.patientName} <span class="text-xs font-normal text-gray-500">(${r.paymentMethod || '-'})</span></div>
                                 <div class="text-xs text-gray-500">${r.description} - Venc: ${formatDateTime(r.dueDate)}</div>
                             </div>
                             <div class="text-right flex items-center gap-2">
                                 ${badge}
                                 <div class="font-bold text-green-600 ml-2">${formatCurrency(r.amount)}</div>
-                                <button onclick="manageMaterials('${k}')" class="text-xs bg-yellow-200 text-yellow-800 px-2 py-1 rounded hover:bg-yellow-300" title="Baixa de Materiais Usados"><i class='bx bx-package'></i></button>
+                                <button onclick="manageMaterials('${k}')" class="text-xs bg-yellow-200 text-yellow-800 px-2 py-1 rounded hover:bg-yellow-300" title="Baixa de Materiais"><i class='bx bx-package'></i></button>
                                 ${action}
                                 <button onclick="deleteTx('receivable', '${k}')" class="text-red-400 hover:text-red-600"><i class='bx bx-trash'></i></button>
                             </div>
@@ -377,12 +467,12 @@
         });
     }
 
-    // --- DESPESAS (COM ENTRADA DE ESTOQUE E FORMA DE PAGAMENTO) ---
+    // --- DESPESAS ---
     function renderExpensesView() {
         var div = document.getElementById('fin-content-area');
         div.innerHTML = `
             <div class="flex justify-between mb-3">
-                <h3 class="font-bold text-gray-700">Contas a Pagar (Despesas)</h3>
+                <h3 class="font-bold text-gray-700">Contas a Pagar</h3>
                 <button onclick="openExpModal()" class="bg-red-600 text-white px-3 py-1 rounded text-sm">+ Nova Despesa</button>
             </div>
             <div id="exp-list" class="space-y-2"></div>`;
@@ -392,9 +482,9 @@
             if(!list) return;
             list.innerHTML = '';
             if(s.exists()) {
-                var data = s.val();
-                Object.keys(data).forEach(function(k) {
-                    var e = data[k];
+                s.forEach(function(snap) {
+                    var e = snap.val();
+                    var k = snap.key;
                     var isPaid = e.status === 'Pago';
                     var badge = isPaid ? `<span class="bg-green-100 text-green-800 text-xs px-2 rounded">Pago</span>` : `<span class="bg-red-100 text-red-800 text-xs px-2 rounded">Aberto</span>`;
                     var action = isPaid ? '' : `<button onclick="settleTx('expenses', '${k}')" class="text-xs bg-blue-500 text-white px-2 py-1 rounded hover:bg-blue-600 ml-2" title="Pagar"><i class='bx bx-check'></i></button>`;
@@ -403,7 +493,7 @@
                         <div class="p-3 border rounded flex justify-between items-center bg-white hover:shadow-sm transition">
                             <div>
                                 <div class="font-bold text-gray-800">${e.supplier} <span class="text-xs font-normal text-gray-500">(${e.ref || 'S/Ref'})</span></div>
-                                <div class="text-xs text-gray-500">${e.description} - ${getPaymentBadge(e.paymentMethod)}</div>
+                                <div class="text-xs text-gray-500">${e.description}</div>
                             </div>
                             <div class="text-right flex items-center gap-2">
                                 ${badge}
@@ -418,7 +508,7 @@
         });
     }
 
-    // --- AÇÕES GLOBAIS (DELETE/SETTLE) ---
+    // --- AÇÕES GLOBAIS ---
     window.deleteTx = function(type, id) {
         if(confirm("Excluir registro?")) db.ref(getFinancePath(currentUser.uid, type) + '/' + id).remove();
     };
@@ -435,7 +525,7 @@
         if(confirm("Remover item?")) db.ref(getStockPath(currentUser.uid) + '/' + id).remove();
     };
 
-    // --- MODAIS DE CRIAÇÃO (AGORA COM FORMA DE PAGAMENTO) ---
+    // --- MODAIS DE CRIAÇÃO ---
     window.openRecModal = function(preselectPid) {
         var opts = allPatients.map(function(p){ return `<option value="${p.id}" ${preselectPid === p.id ? 'selected' : ''}>${p.name}</option>`; }).join('');
         var html = `
@@ -459,7 +549,6 @@
             var pid = document.getElementById('r-pat').value;
             var p = allPatients.find(function(x){ return x.id === pid; });
             
-            // Salva e logo em seguida abre o modal de materiais (FLUXO FLUIDO)
             var newRef = db.ref(getFinancePath(currentUser.uid, 'receivable')).push();
             newRef.set({
                 patientId: pid, patientName: p.name,
@@ -470,7 +559,7 @@
                 status: 'Aberto', registeredAt: new Date().toISOString()
             }).then(function() {
                 closeModal();
-                // AUTO-OPEN: Já abre a gestão de materiais para este serviço
+                // AUTO-OPEN: Já abre a gestão de materiais
                 setTimeout(function() { window.manageMaterials(newRef.key); }, 300);
             });
         };
@@ -505,7 +594,6 @@
                 status: 'Aberto', registeredAt: new Date().toISOString()
             }).then(function() {
                 closeModal();
-                // AUTO-OPEN: Já abre a entrada de estoque
                 setTimeout(function() { window.managePurchaseItems(newRef.key); }, 300);
             });
         };
@@ -519,20 +607,23 @@
             db.ref(getStockPath(currentUser.uid)).push({
                 name: document.getElementById('s-name').value,
                 quantity: parseFloat(document.getElementById('s-qty').value),
-                unit: document.getElementById('s-unit').value, cost: 0
+                unit: document.getElementById('s-unit').value,
+                cost: 0, supplier: 'Cadastro Manual'
             });
             closeModal();
         };
     };
 
-    // --- GESTÃO DE MATERIAIS (CONSUMO E ENTRADA) ---
+    // --- GESTÃO DE ITENS (CORREÇÃO DA TELA PRETA) ---
     
     // BAIXA (Receita)
     window.manageMaterials = function(recId) {
+        // Popula o select com os itens do cache (stockItems)
         var opts = stockItems.map(function(i){ return `<option value="${i.id}">${i.name} (${i.quantity} ${i.unit})</option>`; }).join('');
+        
         var html = `
             <div class="bg-yellow-50 p-3 rounded text-sm mb-4 border-l-4 border-yellow-500 text-yellow-900">
-                <i class='bx bx-info-circle'></i> Registre o que foi gasto neste atendimento. O estoque será atualizado automaticamente.
+                <i class='bx bx-info-circle'></i> Registre o que foi gasto. O estoque será atualizado.
             </div>
             <div id="used-list" class="mb-4 text-sm border border-gray-200 rounded p-2 bg-gray-50 min-h-[50px]">Carregando...</div>
             <div class="flex gap-2 items-end">
@@ -543,7 +634,7 @@
         `;
         openModal("Materiais Gastos", html);
         
-        var ref = db.ref(getRecMatPath(recId));
+        var ref = db.ref(getAdminPath(currentUser.uid, `finance/receivable/${recId}/materials`));
         
         ref.on('value', function(s) {
             var d = document.getElementById('used-list');
@@ -569,7 +660,7 @@
     window.managePurchaseItems = function(expId) {
         var html = `
             <div class="bg-green-50 p-3 rounded text-sm mb-4 border-l-4 border-green-500 text-green-900">
-                <i class='bx bx-cart-alt'></i> Adicione os itens da Nota Fiscal. Eles entrarão no estoque automaticamente.
+                <i class='bx bx-cart-alt'></i> Adicione os itens da Nota. Eles entrarão no estoque.
             </div>
             <div id="pur-list" class="mb-4 text-sm border border-gray-200 rounded p-2 bg-gray-50 min-h-[50px]">Carregando...</div>
             <div class="grid grid-cols-4 gap-2 items-end">
@@ -581,7 +672,7 @@
         `;
         openModal("Itens da Nota Fiscal", html);
         
-        var ref = db.ref(getExpItemsPath(expId));
+        var ref = db.ref(getAdminPath(currentUser.uid, `finance/expenses/${expId}/purchasedItems`));
         ref.on('value', function(s) {
             var d = document.getElementById('pur-list');
             if(d) {
@@ -595,11 +686,9 @@
             var n = document.getElementById('p-n').value; var q = parseFloat(document.getElementById('p-q').value); var u = document.getElementById('p-u').value;
             if(n && q > 0) {
                 await ref.push({ name: n, quantityPurchased: q, unit: u });
-                // Procura ou Cria
                 var exist = stockItems.find(function(x){ return x.name.toLowerCase() === n.toLowerCase(); });
                 if(exist) await db.ref(getStockPath(currentUser.uid) + '/' + exist.id).update({ quantity: parseFloat(exist.quantity) + q });
                 else await db.ref(getStockPath(currentUser.uid)).push({ name: n, quantity: q, unit: u, cost: 0 });
-                
                 document.getElementById('p-n').value = ''; document.getElementById('p-q').value = '';
             }
         };
