@@ -22,6 +22,8 @@ const getStockCollectionPath = (uid) => `artifacts/${appId}/users/${uid}/stock`;
 // FINANCEIRO
 const getExpensePath = (uid) => `artifacts/${appId}/users/${uid}/finance/expenses`; 
 const getReceivablePath = (uid) => `artifacts/${appId}/users/${uid}/finance/receivable`; 
+// NOVO: Caminho para materiais vinculados a um receivable
+const getReceivableMaterialsPath = (receivableId) => `${getReceivablePath(currentUser.uid)}/${receivableId}/materials`;
 
 // Funções de Formatação (para UI)
 const formatFileName = (name) => {
@@ -1106,6 +1108,138 @@ const deleteStockItem = async (itemId, itemName) => {
 
 // --- Funções CRUD Contas a Receber (Receivable) ---
 let receivables = [];
+let receivableMaterialsCache = {}; // Cache para materiais usados por conta a receber
+
+// NOVO MODAL: Para gerenciar os materiais vinculados ao serviço
+const openMaterialConsumptionModal = (receivable) => {
+    const modalTitle = `Materiais Utilizados: ${receivable.patientName}`;
+    
+    // Tenta carregar os materiais consumidos para este serviço
+    const materialsUsed = receivableMaterialsCache[receivable.id] || [];
+    
+    const materialsListHTML = materialsUsed.length > 0 ? materialsUsed.map(m => `
+        <li class="flex justify-between items-center py-2 border-b">
+            <span>${m.name}</span>
+            <span class="font-semibold">${m.quantityUsed} ${m.unit}</span>
+        </li>
+    `).join('') : '<p class="italic text-gray-500">Nenhum material registrado. Adicione um abaixo.</p>';
+    
+    // Opções de estoque para adicionar
+    const stockOptions = stockItems.map(item => 
+        `<option value="${item.id}" data-unit="${item.unit}">
+            ${item.name} (${item.quantity} ${item.unit} em estoque)
+        </option>`
+    ).join('');
+
+    document.getElementById('modal-title').textContent = modalTitle;
+    document.getElementById('modal-body').innerHTML = `
+        <div class="space-y-4">
+            <h4 class="text-lg font-bold text-indigo-700">Materiais Registrados:</h4>
+            <ul class="bg-gray-50 p-4 rounded-lg list-none divide-y" id="materials-used-list">
+                ${materialsListHTML}
+            </ul>
+
+            <h4 class="text-lg font-bold text-indigo-700 mt-6">Adicionar Novo Material:</h4>
+            <form id="add-material-form" class="space-y-3 p-4 border rounded-lg bg-white">
+                <input type="hidden" id="consumption-receivable-id" value="${receivable.id}">
+                <div class="grid grid-cols-3 gap-3">
+                    <div class="col-span-2">
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Material</label>
+                        <select id="consumption-material-id" required class="w-full p-3 border border-gray-300 rounded-lg">
+                            <option value="">Selecione o Material...</option>
+                            ${stockOptions}
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Qtde Consumida</label>
+                        <input type="number" step="any" min="0" id="consumption-quantity" required class="w-full p-3 border border-gray-300 rounded-lg" placeholder="Qtde">
+                    </div>
+                </div>
+                <button type="submit" class="w-full py-2 bg-green-600 hover:bg-green-700 text-white font-semibold rounded-lg transition duration-200">
+                    Registrar Consumo
+                </button>
+            </form>
+        </div>
+        <div class="flex justify-end pt-4">
+            <button type="button" id="close-consumption-modal" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg">Fechar</button>
+        </div>
+    `;
+
+    // Carregar o cache inicial e adicionar listeners
+    loadReceivableMaterials(receivable.id);
+    document.getElementById('add-material-form').addEventListener('submit', saveReceivableMaterial);
+    document.getElementById('close-consumption-modal').addEventListener('click', closeModal);
+    
+    openModal(modalTitle, 'max-w-xl');
+};
+
+const loadReceivableMaterials = (receivableId) => {
+    // Listener para carregar e atualizar a lista de materiais em tempo real
+    const materialsRef = db.ref(getReceivableMaterialsPath(receivableId));
+    
+    materialsRef.on('value', snapshot => {
+        const materialsObject = snapshot.val();
+        let materialsList = [];
+        
+        if (materialsObject) {
+            Object.keys(materialsObject).forEach(key => {
+                materialsList.push({ id: key, ...materialsObject[key] });
+            });
+        }
+        
+        receivableMaterialsCache[receivableId] = materialsList;
+        
+        // Atualiza a UI do modal se ele estiver aberto
+        const listContainer = document.getElementById('materials-used-list');
+        if (listContainer) {
+            listContainer.innerHTML = materialsList.length > 0 ? materialsList.map(m => `
+                <li class="flex justify-between items-center py-2 border-b">
+                    <span>${m.name}</span>
+                    <span class="font-semibold">${m.quantityUsed} ${m.unit}</span>
+                </li>
+            `).join('') : '<p class="italic text-gray-500">Nenhum material registrado. Adicione um abaixo.</p>';
+        }
+    });
+};
+
+const saveReceivableMaterial = async (e) => {
+    e.preventDefault();
+    const receivableId = document.getElementById('consumption-receivable-id').value;
+    const materialSelect = document.getElementById('consumption-material-id');
+    const materialId = materialSelect.value;
+    const quantityUsed = parseFloat(document.getElementById('consumption-quantity').value);
+    
+    if (!materialId || quantityUsed <= 0) return;
+    
+    const selectedItem = stockItems.find(i => i.id === materialId);
+    if (!selectedItem) {
+        showNotification("Material não encontrado no estoque.", "error");
+        return;
+    }
+    
+    const consumptionData = {
+        materialId: materialId,
+        name: selectedItem.name,
+        unit: selectedItem.unit,
+        quantityUsed: quantityUsed,
+        registeredAt: new Date().toISOString()
+    };
+    
+    try {
+        // Salva o consumo no nó da Conta a Receber
+        await db.ref(getReceivableMaterialsPath(receivableId)).push(consumptionData);
+        
+        showNotification(`Consumo de ${quantityUsed} ${selectedItem.unit} de ${selectedItem.name} registrado!`, 'success');
+        
+        // Limpa o formulário de consumo
+        document.getElementById('consumption-quantity').value = '';
+        materialSelect.value = '';
+        
+    } catch (e) {
+        showNotification(`Erro ao registrar consumo (RTDB): ${e.message}`, 'error');
+        console.error("Erro ao salvar consumo (RTDB):", e);
+    }
+};
 
 const openReceivableFormModal = (item = null) => {
     const isEdit = !!item;
@@ -1115,6 +1249,13 @@ const openReceivableFormModal = (item = null) => {
     const patientOptions = allPatients.map(p => 
         `<option value="${p.id}" ${item && item.patientId === p.id ? 'selected' : ''}>${p.name} (${p.treatmentType})</option>`
     ).join('');
+    
+    // Botão de materiais só aparece na edição ou após o cadastro inicial
+    const materialsButton = isEdit ? `
+        <button type="button" id="manage-materials-btn" data-receivable-id="${item.id}" class="py-2 px-4 bg-yellow-500 hover:bg-yellow-600 text-white font-bold rounded-lg transition duration-200 shadow-md">
+            <i class='bx bx-sitemap mr-2'></i> Gerenciar Materiais
+        </button>
+    ` : '';
 
     document.getElementById('modal-title').textContent = modalTitle;
     document.getElementById('modal-body').innerHTML = `
@@ -1155,15 +1296,25 @@ const openReceivableFormModal = (item = null) => {
                 <textarea id="receivable-description" rows="2" required class="w-full p-3 border border-gray-300 rounded-lg resize-none">${isEdit ? item.description : ''}</textarea>
             </div>
             
-            <div class="flex justify-end space-x-3 pt-4">
-                <button type="button" id="form-cancel-btn" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg">Cancelar</button>
-                <button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700">${isEdit ? 'Atualizar' : 'Registrar Serviço'}</button>
+            <div class="flex justify-between items-center pt-4">
+                ${materialsButton}
+                <div class="flex space-x-3">
+                    <button type="button" id="form-cancel-btn" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg">Cancelar</button>
+                    <button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700">${isEdit ? 'Atualizar' : 'Registrar Serviço'}</button>
+                </div>
             </div>
         </form>
     `;
 
     document.getElementById('receivable-form').addEventListener('submit', saveReceivable);
     document.getElementById('form-cancel-btn').addEventListener('click', closeModal);
+    
+    if (isEdit) {
+        document.getElementById('manage-materials-btn').addEventListener('click', (e) => {
+            e.stopPropagation();
+            openMaterialConsumptionModal(item);
+        });
+    }
     
     openModal(modalTitle, 'max-w-2xl');
 };
@@ -1197,9 +1348,12 @@ const saveReceivable = async (e) => {
             const newRef = receivableRef.push();
             itemData.id = newRef.key;
             await newRef.set(itemData);
+            // Se for um novo registro, reabre o modal no modo edição para gerenciar materiais
+            closeModal();
+            openReceivableFormModal(itemData);
         }
         
-        closeModal();
+        if (isEdit) closeModal();
         showNotification(`Conta a Receber (${patientName}) registrada com sucesso!`, 'success');
     } catch (e) {
         showNotification(`Erro ao salvar Conta a Receber (RTDB): ${e.message}`, 'error');
@@ -1284,6 +1438,9 @@ const renderReceivableTable = (items, totalReceivable, receivedThisMonth, openCo
                 <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                     <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${statusClass} mr-2">${t.status}</span>
                     <div class="inline-flex space-x-2">
+                        <button data-action="manage-materials-table" data-id="${t.id}" class="p-2 text-yellow-500 hover:bg-yellow-100 rounded-full" title="Gerenciar Materiais">
+                            <i class='bx bx-sitemap text-xl'></i>
+                        </button>
                         ${actionButton}
                         <button data-action="edit-receivable" data-id="${t.id}" class="p-2 text-indigo-600 hover:bg-indigo-100 rounded-full" title="Editar">
                             <i class='bx bxs-edit-alt text-xl'></i>
@@ -1308,6 +1465,7 @@ const renderReceivableTable = (items, totalReceivable, receivedThisMonth, openCo
             case 'delete-receivable': deleteReceivable(receivableId, item.patientName); break;
             case 'receive': updateReceivableStatus(receivableId, 'Recebido'); break;
             case 'unreceive': updateReceivableStatus(receivableId, 'Aberto'); break;
+            case 'manage-materials-table': openMaterialConsumptionModal(item); break;
         }
     });
 };
@@ -1317,6 +1475,10 @@ const deleteReceivable = async (receivableId, patientName) => {
 
     try {
         await db.ref(getReceivablePath(currentUser.uid) + '/' + receivableId).remove();
+        
+        // Opcional: Limpar os materiais consumidos (remoção em cascata)
+        await db.ref(getReceivableMaterialsPath(receivableId)).remove();
+        
         showNotification(`Conta a Receber excluída com sucesso!`, 'success');
     } catch (e) {
         showNotification(`Erro ao excluir Conta a Receber (RTDB): ${e.message}`, 'error');
@@ -1325,15 +1487,43 @@ const deleteReceivable = async (receivableId, patientName) => {
 };
 
 const updateReceivableStatus = async (receivableId, newStatus) => {
+    const item = receivables.find(r => r.id === receivableId);
+    if (!item) return;
+
     try {
+        if (newStatus === 'Recebido' && item.status !== 'Recebido') {
+            // LÓGICA CRÍTICA DE NEGÓCIO: DAR BAIXA NO ESTOQUE
+            const materialsToConsume = receivableMaterialsCache[receivableId] || [];
+            
+            if (materialsToConsume.length > 0) {
+                for (const consumption of materialsToConsume) {
+                    const stockRef = db.ref(getStockCollectionPath(currentUser.uid) + '/' + consumption.materialId);
+                    const snapshot = await stockRef.once('value');
+                    const stockItem = snapshot.val();
+                    
+                    if (stockItem) {
+                        const newQuantity = stockItem.quantity - consumption.quantityUsed;
+                        if (newQuantity < 0) {
+                            throw new Error(`Estoque insuficiente de ${stockItem.name}. Qtde disponível: ${stockItem.quantity}`);
+                        }
+                        
+                        // Atualiza o estoque no RTDB
+                        await stockRef.update({ quantity: newQuantity });
+                    }
+                }
+                showNotification(`Baixa de estoque aplicada para ${materialsToConsume.length} materiais.`, 'warning');
+            }
+        }
+        
+        // Atualiza o status da Conta a Receber
         await db.ref(getReceivablePath(currentUser.uid) + '/' + receivableId).update({
             status: newStatus,
-            // A data de recebimento é o momento da atualização
             receivedDate: newStatus === 'Recebido' ? new Date().toISOString() : null
         });
         showNotification(`Conta marcada como ${newStatus}!`, 'success');
     } catch (e) {
-        showNotification(`Erro ao atualizar status (RTDB): ${e.message}`, 'error');
+        showNotification(`Falha na Baixa/Recebimento: ${e.message}`, 'error');
+        console.error("Erro na baixa de estoque:", e);
     }
 };
 
