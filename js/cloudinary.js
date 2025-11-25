@@ -4,7 +4,7 @@
 // =====================================================================
 
 (function() {
-    // 1. Desestrutura dentro do escopo local da IIFE
+    // Desestrutura dentro do escopo local da IIFE
     const { CLOUDINARY_CLOUD_NAME, CLOUDINARY_UPLOAD_PRESET } = window.AppConfig;
 
     /**
@@ -56,6 +56,6 @@
         }
     };
 
-    // 2. Exporta APENAS a função para o escopo global
+    // Exporta APENAS a função para o escopo global
     window.uploadToCloudinary = uploadToCloudinary;
 })();
