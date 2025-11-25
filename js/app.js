@@ -1,6 +1,5 @@
 // ==================================================================
-// MÓDULO PRINCIPAL - DENTISTA INTELIGENTE (AGORA TOTALMENTE ENCAPSULADO)
-// ESTA VERSÃO CORRIGE O SYNTAXERROR (allPatients already declared)
+// MÓDULO PRINCIPAL - DENTISTA INTELIGENTE (ESTABILIDADE MÁXIMA)
 // ==================================================================
 (function() {
     
@@ -12,7 +11,7 @@ let db, auth;
 let currentUser = null;
 let currentView = 'dashboard';
 let isLoginMode = true; 
-// VARIÁVEIS DE DADOS GLOBAIS DENTRO DO ESCOPO ISOLADO (CORRIGIDO PARA SINTAXE)
+// VARIÁVEIS DE DADOS GLOBAIS (AGORA SÃO LOCAIS À IIFE E INICIALIZADAS ABAIXO)
 let allPatients = []; 
 let receivables = []; 
 let stockItems = []; 
@@ -340,7 +339,7 @@ const renderDashboard = (container) => {
                     <i class='bx bxs-brain text-xl mr-2'></i> Alimentar o BRAIN (Diretrizes da IA)
                 </h3>
                 <p class="text-gray-600 mb-4 text-sm">Defina as regras. Use: <code>Variável de Tratamento: [TIPO]</code> e <code>Meta: [META]</code>.</p>
-                <textarea id="brain-input" rows="5" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 shadow-inner resize-none" placeholder="Ex: 'Atuar como assistente de ortodontia. Focar em higiene e uso de elásticos. Variável de Tratamento: [TIPO]. Meta: [META].'"></textarea>
+                <textarea id="brain-input" rows="5" class="w-full p-3 border border-indigo-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 shadow-inner resize-none" placeholder="Ex: 'Atuar como assistente de ortodontia. Focar em higiene e uso de elásticos. Variável de Tratamento: [TIPO]. Meta: [META].'"></textarea>
                 <div class="flex justify-between items-center mt-4">
                     <button id="save-brain-btn" class="py-3 px-6 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg transition duration-200 shadow-md">
                         <i class='bx bxs-save text-xl mr-2'></i> Salvar Diretrizes
@@ -506,7 +505,7 @@ const openPatientFormModal = (patient = null) => {
             
             <div>
                 <label class="block text-sm font-medium text-gray-700 mb-1">Meta Principal do Tratamento</label>
-                <textarea id="patient-treatment-goal" rows="2" required class="w-full p-3 border border-gray-300 rounded-lg resize-none">${isEdit ? patient.treatmentGoal : ''}</textarea>
+                <textarea id="patient-treatment-goal" rows="2" placeholder="Ex: Fechar diastema central em 6 meses. Instrução essencial para a IA." required class="w-full p-3 border border-gray-300 rounded-lg resize-none">${isEdit ? patient.treatmentGoal : ''}</textarea>
             </div>
             
             <div class="flex justify-end space-x-3 pt-4">
