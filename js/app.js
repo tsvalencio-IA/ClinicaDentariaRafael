@@ -7,17 +7,17 @@
 const config = window.AppConfig;
 const appId = config.APP_ID; 
 
-let db, auth;
-let currentUser = null;
-let currentView = 'dashboard';
-let isLoginMode = true; 
+db, auth;
+currentUser = null;
+currentView = 'dashboard';
+isLoginMode = true; 
 // VARIÁVEIS DE DADOS GLOBAIS (AGORA SÃO LOCAIS À IIFE E INICIALIZADAS ABAIXO)
-let allPatients = []; 
-let receivables = []; 
-let stockItems = []; 
-let receivableMaterialsCache = {}; 
-let expenses = []; 
-let expensePurchasedItemsCache = {}; 
+allPatients = []; 
+receivables = []; 
+stockItems = []; 
+receivableMaterialsCache = {}; 
+expenses = []; 
+expensePurchasedItemsCache = {}; 
 
 
 // ==================================================================
