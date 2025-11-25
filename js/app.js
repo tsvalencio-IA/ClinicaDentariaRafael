@@ -9,6 +9,7 @@ const appId = config.APP_ID;
 let db, auth;
 let currentUser = null;
 let currentView = 'dashboard';
+let isLoginMode = true; // Novo estado para o form de login
 
 // ==================================================================
 // FUNÇÕES AUXILIARES
@@ -18,7 +19,9 @@ let currentView = 'dashboard';
 const getAdminCollectionPath = (uid, collectionName) => `artifacts/${appId}/users/${uid}/${collectionName}`;
 const getJournalCollectionPath = (patientId) => `artifacts/${appId}/patients/${patientId}/journal`;
 const getStockCollectionPath = (uid) => `artifacts/${appId}/users/${uid}/stock`;
-const getFinancialsPath = (uid) => `artifacts/${appId}/users/${uid}/finance`; // NOVO CAMINHO RTDB
+// FINANCEIRO
+const getExpensePath = (uid) => `artifacts/${appId}/users/${uid}/finance/expenses`; 
+const getReceivablePath = (uid) => `artifacts/${appId}/users/${uid}/finance/receivable`; 
 
 // Funções de Formatação (para UI)
 const formatFileName = (name) => {
@@ -56,7 +59,25 @@ const showNotification = (message, type = 'success') => {
 
 const formatCurrency = (value) => `R$ ${parseFloat(value || 0).toFixed(2).replace('.', ',')}`;
 
-// --- Conexão Firebase ---
+// ==================================================================
+// MÓDULO DE AUTENTICAÇÃO E INICIALIZAÇÃO
+// ==================================================================
+
+// Função que monitora o estado de autenticação
+const setupAuthStateListener = () => {
+    auth.onAuthStateChanged(async (user) => {
+        if (user) {
+            // Usuário logado (agora por email/senha)
+            currentUser = { uid: user.uid, email: user.email || 'Admin Anônimo' };
+            showUI(); // Carrega a interface principal
+        } else {
+            // Usuário deslogado
+            currentUser = null;
+            showLoginScreen(true); // Exibe a tela de login
+        }
+    });
+};
+
 const initializeFirebase = async () => {
     if (Object.keys(config.firebaseConfig).length === 0) {
         showNotification("ERRO: Configuração do Firebase está vazia. Verifique a injeção do ambiente.", "error");
@@ -68,31 +89,112 @@ const initializeFirebase = async () => {
             firebase.initializeApp(config.firebaseConfig);
         }
         
-        // CORREÇÃO: Usando Realtime Database (RTDB)
         db = firebase.database();
         auth = firebase.auth();
         
-        // Tenta autenticar o usuário Dentista/Admin
-        let user;
-        if (config.initialAuthToken) {
-             const userCredential = await auth.signInWithCustomToken(config.initialAuthToken);
-             user = userCredential.user;
-        } else {
-             // Fallback para login anônimo (deve estar habilitado no console!)
-             const userCredential = await auth.signInAnonymously();
-             user = userCredential.user;
-        }
-
-        currentUser = { uid: user.uid, email: user.email || 'Admin Anônimo' };
-        
-        document.getElementById('loading-message').textContent = 'Sucesso! Carregando UI...';
-        showUI();
+        // Configuramos o listener e ele controlará o fluxo
+        setupAuthStateListener();
         
     } catch (error) {
-        console.error("Erro CRÍTICO na autenticação ou inicialização:", error);
-        document.getElementById('loading-message').textContent = `Falha no Login: ${error.message}`;
+        console.error("Erro CRÍTICO na inicialização do Firebase:", error);
+        document.getElementById('auth-error-message').textContent = `Falha na inicialização: ${error.message}`;
     }
 };
+
+const showLoginScreen = (isInitial = false) => {
+    // Esconde a tela de loading/app, mostra a tela de login
+    document.getElementById('login-screen').classList.remove('hidden');
+    document.getElementById('app-container').classList.add('hidden');
+    
+    // Se for a primeira vez, tentamos o login anônimo para compatibilidade (remover para produção estrita)
+    if (isInitial && !auth.currentUser && !config.initialAuthToken) {
+        handleAnonymousLogin();
+    }
+};
+
+const handleAnonymousLogin = async () => {
+    // Tentativa de login anônimo para compatibilidade de testes (será removido na produção final)
+    try {
+        const loadingMsg = document.getElementById('auth-message');
+        if (loadingMsg) loadingMsg.textContent = "Conectando ao Firebase...";
+        
+        const userCredential = await auth.signInAnonymously();
+        
+        // Se o login anônimo funcionar, o listener em setupAuthStateListener cuidará do showUI()
+    } catch (error) {
+        // Se falhar (e.g., login anônimo desabilitado), força o modo Login por Email/Senha
+        console.warn("Falha no login anônimo, forçando login por email/senha:", error.code);
+        const loadingMsg = document.getElementById('auth-message');
+        if (loadingMsg) loadingMsg.textContent = "Entre com suas credenciais ou cadastre-se.";
+        // Não é necessário fazer mais nada, o onAuthStateChanged(null) cuidará da exibição da tela.
+    }
+};
+
+const toggleAuthMode = () => {
+    isLoginMode = !isLoginMode;
+    const submitBtn = document.getElementById('auth-submit-btn');
+    const toggleBtn = document.getElementById('toggle-auth-mode');
+    const message = document.getElementById('auth-message');
+    
+    if (isLoginMode) {
+        submitBtn.textContent = 'Entrar';
+        toggleBtn.textContent = 'Não tem conta? Cadastre-se';
+        message.textContent = 'Entre com suas credenciais.';
+    } else {
+        submitBtn.textContent = 'Cadastrar';
+        toggleBtn.textContent = 'Já tem conta? Fazer Login';
+        message.textContent = 'Crie sua conta de administrador (Dentista).';
+        // Habilite o provedor Email/Senha no console do Firebase para que o registro funcione!
+    }
+    document.getElementById('auth-error-message').textContent = '';
+};
+
+const handleAuthSubmit = async (e) => {
+    e.preventDefault();
+    const email = document.getElementById('auth-email').value;
+    const password = document.getElementById('auth-password').value;
+    const errorEl = document.getElementById('auth-error-message');
+    const submitBtn = document.getElementById('auth-submit-btn');
+    const loadingContainer = document.getElementById('loading-spinner-container');
+
+    errorEl.textContent = '';
+    submitBtn.disabled = true;
+    loadingContainer.classList.remove('hidden');
+    
+    try {
+        if (isLoginMode) {
+            // Tenta fazer Login
+            await auth.signInWithEmailAndPassword(email, password);
+            showNotification(`Bem-vindo, ${email}!`, 'success');
+        } else {
+            // Tenta fazer Registro
+            const userCredential = await auth.createUserWithEmailAndPassword(email, password);
+            const user = userCredential.user;
+            
+            // Marca o usuário como admin/dentista no RTDB após o registro
+            await db.ref(`artifacts/${appId}/users/${user.uid}/profile`).set({
+                email: user.email,
+                role: 'dentist',
+                registeredAt: new Date().toISOString()
+            });
+            showNotification(`Conta ${email} criada com sucesso!`, 'success');
+        }
+    } catch (error) {
+        let displayMessage = 'Ocorreu um erro no acesso.';
+        if (error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password') {
+            displayMessage = 'Credenciais inválidas. Verifique email e senha.';
+        } else if (error.code === 'auth/email-already-in-use') {
+            displayMessage = 'Este email já está cadastrado. Tente fazer Login.';
+        } else if (error.code === 'auth/weak-password') {
+            displayMessage = 'A senha deve ter pelo menos 6 caracteres.';
+        }
+        errorEl.textContent = displayMessage;
+    } finally {
+        submitBtn.disabled = false;
+        loadingContainer.classList.add('hidden');
+    }
+};
+
 
 // --- Funções de Navegação e Renderização ---
 const showUI = () => {
@@ -156,7 +258,6 @@ const renderContent = () => {
     }
 };
 
-
 // ==================================================================
 // MÓDULOS DE RENDERIZAÇÃO
 // ==================================================================
@@ -191,7 +292,7 @@ const renderDashboard = (container) => {
             </div>
 
             <p class="mt-8 text-sm text-gray-500 text-center">
-                ID Dentista: <span class="font-mono text-xs p-1 bg-gray-100 rounded">${currentUser.uid.slice(0, 8)}...</span>
+                ID Dentista: <span class="font-mono text-xs p-1 bg-gray-100 rounded">${currentUser ? currentUser.uid.slice(0, 8) : 'N/A'}...</span>
             </p>
         </div>
     `;
@@ -203,6 +304,8 @@ const renderDashboard = (container) => {
 };
 
 const loadDashboardKPIs = () => {
+    if (!currentUser) return;
+
     // Conta Pacientes
     const patientRef = db.ref(getAdminCollectionPath(currentUser.uid, 'patients'));
     patientRef.once('value', snapshot => {
@@ -219,10 +322,14 @@ const loadDashboardKPIs = () => {
 }
 
 const loadBrainConfig = () => {
+    if (!currentUser) return;
+    
     // RTDB ADAPTADO: Usando .once('value') para carregar dados
     const brainRef = db.ref(getAdminCollectionPath(currentUser.uid, 'aiConfig') + '/directives');
     brainRef.once('value').then(snapshot => {
         const brainInput = document.getElementById('brain-input');
+        if (!brainInput) return;
+        
         if (snapshot.exists()) {
             brainInput.value = snapshot.val().promptDirectives;
         } else {
@@ -232,6 +339,8 @@ const loadBrainConfig = () => {
 };
 
 const saveBrainConfig = () => {
+    if (!currentUser) return;
+    
     const prompt = document.getElementById('brain-input').value;
     const msgEl = document.getElementById('brain-message');
     if (!prompt.trim()) {
@@ -362,28 +471,29 @@ const openPatientFormModal = (patient = null) => {
 
 const savePatient = async (e) => {
     e.preventDefault();
-    // No RTDB usamos .push() para novos IDs, ou o ID existente para update.
     const isEdit = !!document.getElementById('patient-id').value;
     const patientId = document.getElementById('patient-id').value; 
     
+    // CORREÇÃO DO ERRO: Encontra o paciente original para pegar o 'createdAt'
+    const originalPatient = isEdit ? allPatients.find(p => p.id === patientId) : null;
+    
     const patientData = { 
-        id: patientId || null, // Será preenchido pelo push().key se for novo
+        id: patientId || null, 
         name: document.getElementById('patient-name').value,
         email: document.getElementById('patient-email').value,
         treatmentType: document.getElementById('patient-treatment-type').value,
         treatmentGoal: document.getElementById('patient-treatment-goal').value,
         status: document.getElementById('patient-status').value,
-        createdAt: isEdit ? allPatients.find(p => p.id === patientId).createdAt : new Date().toISOString()
+        // CORREÇÃO: Usa a data original SE o paciente for encontrado, senão usa a data atual
+        createdAt: originalPatient ? originalPatient.createdAt : new Date().toISOString()
     };
     
     try {
         const patientsRef = db.ref(getAdminCollectionPath(currentUser.uid, 'patients'));
 
         if (isEdit) {
-            // Update: Define o dado no nó existente
             await patientsRef.child(patientId).update(patientData);
         } else {
-            // Novo: Usa push() para gerar um ID (key)
             const newRef = patientsRef.push();
             patientData.id = newRef.key;
             await newRef.set(patientData);
@@ -400,6 +510,8 @@ const savePatient = async (e) => {
 let allPatients = [];
 
 const loadPatients = () => {
+    if (!currentUser) return;
+    
     // RTDB ADAPTADO: Usando .on('value') para real-time listener
     const patientsRef = db.ref(getAdminCollectionPath(currentUser.uid, 'patients'));
     
@@ -440,7 +552,7 @@ const renderPatientsTable = (patients) => {
             <td class="px-6 py-4 text-sm text-gray-500 truncate max-w-xs" title="${p.treatmentGoal}">${p.treatmentGoal || 'Não definida'}</td>
             <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                 <div class="flex justify-end space-x-2">
-                    <button data-action="journal" data-id="${p.id}" class="p-2 text-cyan-600 hover:bg-cyan-100 rounded-full" title="Abrir Diário (IA)">
+                    <button data-action="journal" data-id="${p.id}" data-patient-name="${p.name}" class="p-2 text-cyan-600 hover:bg-cyan-100 rounded-full" title="Abrir Diário (IA)">
                         <i class='bx bx-message-square-dots text-xl'></i>
                     </button>
                     <button data-action="edit" data-id="${p.id}" class="p-2 text-indigo-600 hover:bg-indigo-100 rounded-full" title="Editar">
@@ -458,12 +570,14 @@ const renderPatientsTable = (patients) => {
         const btn = e.target.closest('button');
         if (!btn) return;
         const patientId = btn.dataset.id;
-        const patient = patients.find(p => p.id === patientId);
+        // Encontra o paciente na lista 'allPatients' que já está em memória
+        const patient = allPatients.find(p => p.id === patientId); 
         if (!patient) return;
 
         switch (btn.dataset.action) {
             case 'journal': openJournalModal(patient); break;
-            case 'edit': openPatientFormModal(patient); break;
+            // Passa o objeto paciente diretamente para o modal de edição
+            case 'edit': openPatientFormModal(patient); break; 
             case 'delete': deletePatient(patientId, patient.name); break;
         }
     });
@@ -684,7 +798,8 @@ const renderFinancialManager = (container) => {
             
             <div class="flex border-b border-gray-200 mb-6">
                 <button data-tab="stock" class="p-3 text-sm font-medium border-b-2 border-indigo-600 text-indigo-700">Inventário de Materiais</button>
-                <button data-tab="finance" class="p-3 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700">Despesas & Receitas</button>
+                <button data-tab="receivable" class="p-3 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700">Contas a Receber</button>
+                <button data-tab="expense" class="p-3 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700">Despesas</button>
             </div>
 
             <div id="financial-tab-content">
@@ -714,9 +829,12 @@ const renderFinancialManager = (container) => {
 
 // Nova função para gerenciar a renderização interna da aba Financeiro
 const renderFinancialTab = (tab, container) => {
+    container.innerHTML = ''; // Limpa o container antes de carregar
+
     if (tab === 'stock') {
         container.innerHTML = `
-            <div class="flex justify-end mb-6">
+            <div class="flex justify-between items-center mb-6">
+                <h3 class="text-xl font-semibold text-gray-700">Inventário de Materiais</h3>
                 <button id="add-stock-btn" class="py-2 px-4 bg-green-600 hover:bg-green-700 text-white font-bold rounded-lg transition duration-200 shadow-md flex items-center justify-center">
                     <i class='bx bx-plus-circle text-xl mr-2'></i> Novo Item
                 </button>
@@ -741,40 +859,75 @@ const renderFinancialTab = (tab, container) => {
         document.getElementById('add-stock-btn').addEventListener('click', () => openStockFormModal());
         loadStock();
 
-    } else if (tab === 'finance') {
+    } else if (tab === 'receivable') {
         container.innerHTML = `
             <div class="flex justify-between items-center mb-6">
-                <h3 class="text-xl font-semibold text-gray-700">Extrato de Transações</h3>
-                <button id="add-transaction-btn" class="py-2 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg transition duration-200 shadow-md flex items-center justify-center">
-                    <i class='bx bx-plus-circle text-xl mr-2'></i> Nova Transação
+                <h3 class="text-xl font-semibold text-gray-700">Contas a Receber</h3>
+                <button id="add-receivable-btn" class="py-2 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg transition duration-200 shadow-md flex items-center justify-center">
+                    <i class='bx bx-plus-circle text-xl mr-2'></i> Registrar Serviço
                 </button>
             </div>
 
-            <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-                <div class="p-4 bg-green-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Total Receitas</p><p class="text-2xl font-bold text-green-800" id="total-revenue">${formatCurrency(0)}</p></div>
-                <div class="p-4 bg-red-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Total Despesas</p><p class="text-2xl font-bold text-red-800" id="total-expense">${formatCurrency(0)}</p></div>
-                <div class="p-4 bg-indigo-100 rounded-lg shadow-md col-span-2"><p class="text-sm text-gray-600">Lucro Líquido</p><p class="text-2xl font-bold text-indigo-800" id="net-profit">${formatCurrency(0)}</p></div>
+            <div class="grid grid-cols-3 gap-4 mb-6">
+                <div class="p-4 bg-green-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Total a Receber</p><p class="text-2xl font-bold text-green-800" id="total-receivable">${formatCurrency(0)}</p></div>
+                <div class="p-4 bg-yellow-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Recebido no Mês</p><p class="text-2xl font-bold text-yellow-800" id="received-this-month">${formatCurrency(0)}</p></div>
+                <div class="p-4 bg-gray-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Contas Abertas</p><p class="text-2xl font-bold text-gray-800" id="open-receivable-count">0</p></div>
             </div>
 
             <div class="overflow-x-auto bg-gray-50 rounded-xl shadow-inner border border-gray-200">
                 <table class="min-w-full divide-y divide-gray-200">
                     <thead class="bg-gray-200">
                         <tr>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Data</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Tipo</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Descrição/Paciente</th>
+                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Paciente</th>
+                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Vencimento</th>
+                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Descrição</th>
                             <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Valor</th>
-                            <th class="px-6 py-3 text-right text-xs font-bold text-gray-600 uppercase">Ações</th>
+                            <th class="px-6 py-3 text-right text-xs font-bold text-gray-600 uppercase">Status/Ações</th>
                         </tr>
                     </thead>
-                    <tbody id="transactions-table-body" class="bg-white divide-y divide-gray-200">
-                        <tr><td colspan="5" class="px-6 py-4 text-center text-gray-500 italic">Carregando transações...</td></tr>
+                    <tbody id="receivable-table-body" class="bg-white divide-y divide-gray-200">
+                        <tr><td colspan="5" class="px-6 py-4 text-center text-gray-500 italic">Carregando contas a receber...</td></tr>
                     </tbody>
                 </table>
             </div>
         `;
-        document.getElementById('add-transaction-btn').addEventListener('click', () => openTransactionFormModal());
-        loadTransactions();
+        document.getElementById('add-receivable-btn').addEventListener('click', () => openReceivableFormModal());
+        loadReceivable();
+
+    } else if (tab === 'expense') {
+        container.innerHTML = `
+            <div class="flex justify-between items-center mb-6">
+                <h3 class="text-xl font-semibold text-gray-700">Registro de Despesas</h3>
+                <button id="add-expense-btn" class="py-2 px-4 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg transition duration-200 shadow-md flex items-center justify-center">
+                    <i class='bx bx-minus-circle text-xl mr-2'></i> Registrar Despesa
+                </button>
+            </div>
+
+            <div class="grid grid-cols-3 gap-4 mb-6">
+                <div class="p-4 bg-red-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Total Despesas Mês</p><p class="text-2xl font-bold text-red-800" id="total-expense">${formatCurrency(0)}</p></div>
+                <div class="p-4 bg-yellow-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Próximo Vencimento</p><p class="text-2xl font-bold text-yellow-800" id="next-due-date">N/A</p></div>
+                <div class="p-4 bg-gray-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Contas Abertas</p><p class="text-2xl font-bold text-gray-800" id="open-expense-count">0</p></div>
+            </div>
+
+            <div class="overflow-x-auto bg-gray-50 rounded-xl shadow-inner border border-gray-200">
+                <table class="min-w-full divide-y divide-gray-200">
+                    <thead class="bg-gray-200">
+                        <tr>
+                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Vencimento</th>
+                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Nota/Ref</th>
+                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Descrição</th>
+                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Valor</th>
+                            <th class="px-6 py-3 text-right text-xs font-bold text-gray-600 uppercase">Ações</th>
+                        </tr>
+                    </thead>
+                    <tbody id="expense-table-body" class="bg-white divide-y divide-gray-200">
+                        <tr><td colspan="5" class="px-6 py-4 text-center text-gray-500 italic">Carregando despesas...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        `;
+        document.getElementById('add-expense-btn').addEventListener('click', () => openExpenseFormModal());
+        loadExpenses();
     }
 };
 
@@ -783,6 +936,8 @@ const renderFinancialTab = (tab, container) => {
 let stockItems = [];
 
 const loadStock = () => {
+    if (!currentUser) return;
+
     const stockRef = db.ref(getStockCollectionPath(currentUser.uid));
     
     stockRef.on('value', snapshot => {
@@ -949,153 +1104,191 @@ const deleteStockItem = async (itemId, itemName) => {
     }
 };
 
-// --- Funções CRUD Transações Financeiras (NOVAS) ---
-let financialTransactions = [];
+// --- Funções CRUD Contas a Receber (Receivable) ---
+let receivables = [];
 
-const openTransactionFormModal = (transaction = null) => {
-    const isEdit = !!transaction;
-    const modalTitle = isEdit ? `Editar Transação` : 'Nova Transação (Receita/Despesa)';
+const openReceivableFormModal = (item = null) => {
+    const isEdit = !!item;
+    const modalTitle = isEdit ? `Editar Conta a Receber` : 'Registrar Serviço (Contas a Receber)';
+    
+    // Gerar a lista de pacientes para o SELECT
+    const patientOptions = allPatients.map(p => 
+        `<option value="${p.id}" ${item && item.patientId === p.id ? 'selected' : ''}>${p.name} (${p.treatmentType})</option>`
+    ).join('');
 
     document.getElementById('modal-title').textContent = modalTitle;
     document.getElementById('modal-body').innerHTML = `
-        <form id="transaction-form" class="space-y-4">
-            <input type="hidden" id="transaction-id" value="${isEdit ? transaction.id : ''}">
+        <form id="receivable-form" class="space-y-4">
+            <input type="hidden" id="receivable-id" value="${isEdit ? item.id : ''}">
             
             <div class="grid grid-cols-2 gap-4">
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Tipo</label>
-                    <select id="transaction-type" required class="w-full p-3 border border-gray-300 rounded-lg">
-                        <option value="Receita">Receita (Ex: Pagamento de Paciente)</option>
-                        <option value="Despesa">Despesa (Ex: Aluguel, Salário)</option>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Paciente</label>
+                    <select id="receivable-patient-id" required class="w-full p-3 border border-gray-300 rounded-lg">
+                        <option value="">Selecione o Paciente...</option>
+                        ${patientOptions}
                     </select>
                 </div>
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Valor (R$)</label>
-                    <input type="number" step="0.01" id="transaction-amount" value="${isEdit ? transaction.amount : ''}" required class="w-full p-3 border border-gray-300 rounded-lg">
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Valor do Serviço (R$)</label>
+                    <input type="number" step="0.01" id="receivable-amount" value="${isEdit ? item.amount : ''}" required class="w-full p-3 border border-gray-300 rounded-lg">
+                </div>
+            </div>
+            
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Vencimento</label>
+                    <input type="date" id="receivable-due-date" value="${isEdit ? item.dueDate : new Date().toISOString().substring(0, 10)}" required class="w-full p-3 border border-gray-300 rounded-lg">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Status</label>
+                    <select id="receivable-status" required class="w-full p-3 border border-gray-300 rounded-lg">
+                        <option value="Aberto">Aberto</option>
+                        <option value="Recebido" ${isEdit && item.status === 'Recebido' ? 'selected' : ''}>Recebido</option>
+                        <option value="Atrasado" ${isEdit && item.status === 'Atrasado' ? 'selected' : ''}>Atrasado</option>
+                    </select>
                 </div>
             </div>
             
             <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">Descrição / Referência (Ex: Paciente João Silva, Aluguel do Mês)</label>
-                <input type="text" id="transaction-description" value="${isEdit ? transaction.description : ''}" required class="w-full p-3 border border-gray-300 rounded-lg">
-            </div>
-
-             <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">Data da Transação</label>
-                <input type="date" id="transaction-date" value="${isEdit ? transaction.date : new Date().toISOString().substring(0, 10)}" required class="w-full p-3 border border-gray-300 rounded-lg">
+                <label class="block text-sm font-medium text-gray-700 mb-1">Descrição Detalhada do Serviço</label>
+                <textarea id="receivable-description" rows="2" required class="w-full p-3 border border-gray-300 rounded-lg resize-none">${isEdit ? item.description : ''}</textarea>
             </div>
             
             <div class="flex justify-end space-x-3 pt-4">
                 <button type="button" id="form-cancel-btn" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg">Cancelar</button>
-                <button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700">${isEdit ? 'Atualizar' : 'Registrar'}</button>
+                <button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700">${isEdit ? 'Atualizar' : 'Registrar Serviço'}</button>
             </div>
         </form>
     `;
-    
-    if (isEdit) {
-        document.getElementById('transaction-type').value = transaction.type;
-    }
 
-    document.getElementById('transaction-form').addEventListener('submit', saveTransaction);
+    document.getElementById('receivable-form').addEventListener('submit', saveReceivable);
     document.getElementById('form-cancel-btn').addEventListener('click', closeModal);
     
-    openModal(modalTitle, 'max-w-xl');
+    openModal(modalTitle, 'max-w-2xl');
 };
 
-const saveTransaction = async (e) => {
+const saveReceivable = async (e) => {
     e.preventDefault();
-    const isEdit = !!document.getElementById('transaction-id').value;
-    const transactionId = document.getElementById('transaction-id').value;
+    const isEdit = !!document.getElementById('receivable-id').value;
+    const receivableId = document.getElementById('receivable-id').value;
+    const patientId = document.getElementById('receivable-patient-id').value;
+    
+    // Busca o nome do paciente no array em memória
+    const patientName = allPatients.find(p => p.id === patientId)?.name || "Paciente Removido"; 
 
-    const transactionData = {
-        id: transactionId || null,
-        type: document.getElementById('transaction-type').value,
-        amount: parseFloat(document.getElementById('transaction-amount').value),
-        description: document.getElementById('transaction-description').value,
-        date: document.getElementById('transaction-date').value, // Formato YYYY-MM-DD
+    const itemData = {
+        id: receivableId || null,
+        patientId: patientId,
+        patientName: patientName,
+        amount: parseFloat(document.getElementById('receivable-amount').value),
+        dueDate: document.getElementById('receivable-due-date').value,
+        description: document.getElementById('receivable-description').value,
+        status: document.getElementById('receivable-status').value,
         registeredAt: new Date().toISOString()
     };
-
+    
     try {
-        const financialsRef = db.ref(getFinancialsPath(currentUser.uid));
+        const receivableRef = db.ref(getReceivablePath(currentUser.uid));
 
         if (isEdit) {
-            await financialsRef.child(transactionId).update(transactionData);
+            await receivableRef.child(receivableId).update(itemData);
         } else {
-            const newRef = financialsRef.push();
-            transactionData.id = newRef.key;
-            await newRef.set(transactionData);
+            const newRef = receivableRef.push();
+            itemData.id = newRef.key;
+            await newRef.set(itemData);
         }
-
+        
         closeModal();
-        showNotification(`Transação (${transactionData.type}) registrada com sucesso!`, 'success');
+        showNotification(`Conta a Receber (${patientName}) registrada com sucesso!`, 'success');
     } catch (e) {
-        showNotification(`Erro ao registrar transação (RTDB): ${e.message}`, 'error');
-        console.error("Erro ao salvar transação (RTDB):", e);
+        showNotification(`Erro ao salvar Conta a Receber (RTDB): ${e.message}`, 'error');
+        console.error("Erro ao salvar Conta a Receber (RTDB):", e);
     }
 };
 
-const loadTransactions = () => {
-    const financialsRef = db.ref(getFinancialsPath(currentUser.uid));
+const loadReceivable = () => {
+    if (!currentUser) return;
+    
+    const receivableRef = db.ref(getReceivablePath(currentUser.uid));
 
-    financialsRef.on('value', snapshot => {
-        const transactionsObject = snapshot.val();
-        let transactionsList = [];
-        let totalRevenue = 0;
-        let totalExpense = 0;
+    receivableRef.on('value', snapshot => {
+        const itemsObject = snapshot.val();
+        let itemsList = [];
+        let totalReceivable = 0;
+        let receivedThisMonth = 0;
+        let openCount = 0;
 
-        if (transactionsObject) {
-            Object.keys(transactionsObject).forEach(key => {
-                const transaction = { id: key, ...transactionsObject[key] };
-                transactionsList.push(transaction);
-
-                if (transaction.type === 'Receita') {
-                    totalRevenue += transaction.amount;
-                } else if (transaction.type === 'Despesa') {
-                    totalExpense += transaction.amount;
+        if (itemsObject) {
+            Object.keys(itemsObject).forEach(key => {
+                const item = { id: key, ...itemsObject[key] };
+                
+                if (item.status === 'Aberto' || item.status === 'Atrasado') {
+                    totalReceivable += item.amount;
+                    openCount++;
                 }
+
+                const today = new Date();
+                // A data de recebimento é implicitamente a data de registro/update
+                const itemDate = new Date(item.registeredAt); 
+                
+                if (item.status === 'Recebido' && itemDate.getMonth() === today.getMonth() && itemDate.getFullYear() === today.getFullYear()) {
+                    receivedThisMonth += item.amount;
+                }
+                
+                itemsList.push(item);
             });
         }
         
-        financialTransactions = transactionsList;
-        renderTransactionsTable(transactionsList, totalRevenue, totalExpense);
-    }, e => showNotification(`Erro ao carregar transações (RTDB): ${e.message}`, 'error'));
+        receivables = itemsList;
+        renderReceivableTable(itemsList, totalReceivable, receivedThisMonth, openCount);
+    }, e => showNotification(`Erro ao carregar Contas a Receber (RTDB): ${e.message}`, 'error'));
 };
 
-const renderTransactionsTable = (transactions, totalRevenue, totalExpense) => {
-    const tbody = document.getElementById('transactions-table-body');
+const renderReceivableTable = (items, totalReceivable, receivedThisMonth, openCount) => {
+    const tbody = document.getElementById('receivable-table-body');
     if (!tbody) return;
 
     // Atualiza KPIs
-    document.getElementById('total-revenue').textContent = formatCurrency(totalRevenue);
-    document.getElementById('total-expense').textContent = formatCurrency(totalExpense);
-    document.getElementById('net-profit').textContent = formatCurrency(totalRevenue - totalExpense);
-
-    // Renderiza a tabela
-    if (transactions.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="5" class="px-6 py-4 text-center text-gray-500 italic">Nenhuma transação registrada.</td></tr>`;
+    document.getElementById('total-receivable').textContent = formatCurrency(totalReceivable);
+    document.getElementById('received-this-month').textContent = formatCurrency(receivedThisMonth);
+    document.getElementById('open-receivable-count').textContent = openCount;
+    
+    if (items.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="5" class="px-6 py-4 text-center text-gray-500 italic">Nenhuma conta a receber registrada.</td></tr>`;
         return;
     }
     
-    // Ordena por data (mais recente primeiro)
-    transactions.sort((a, b) => new Date(b.date) - new Date(a.date));
+    items.sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate)); // Ordena por data de vencimento
 
-    tbody.innerHTML = transactions.map(t => {
-        const isRevenue = t.type === 'Receita';
-        const amountClass = isRevenue ? 'text-green-600 font-bold' : 'text-red-600 font-bold';
+    tbody.innerHTML = items.map(t => {
+        const isReceived = t.status === 'Recebido';
+        let statusClass = 'bg-yellow-100 text-yellow-800';
+        if (isReceived) statusClass = 'bg-green-100 text-green-800';
+        if (t.status === 'Atrasado') statusClass = 'bg-red-100 text-red-800';
         
+        const actionButton = isReceived ? 
+            `<button data-action="unreceive" data-id="${t.id}" class="p-2 text-gray-400 hover:text-gray-600" title="Marcar como Aberta">
+                <i class='bx bx-undo text-xl'></i>
+            </button>` :
+            `<button data-action="receive" data-id="${t.id}" class="p-2 text-green-600 hover:bg-green-100 rounded-full" title="Marcar como Recebido">
+                <i class='bx bx-check-square text-xl'></i>
+            </button>`;
+
         return `
             <tr class="hover:bg-gray-50 transition-colors">
-                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${t.date}</td>
-                <td class="px-6 py-4 whitespace-nowrap text-xs font-semibold ${isRevenue ? 'text-green-700' : 'text-red-700'}">${t.type}</td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">${t.patientName}</td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${t.dueDate}</td>
                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">${t.description}</td>
-                <td class="px-6 py-4 whitespace-nowrap text-sm ${amountClass}">${formatCurrency(t.amount)}</td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm font-bold text-green-600">${formatCurrency(t.amount)}</td>
                 <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                    <div class="flex justify-end space-x-2">
-                        <button data-action="edit-finance" data-id="${t.id}" class="p-2 text-indigo-600 hover:bg-indigo-100 rounded-full" title="Editar">
+                    <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${statusClass} mr-2">${t.status}</span>
+                    <div class="inline-flex space-x-2">
+                        ${actionButton}
+                        <button data-action="edit-receivable" data-id="${t.id}" class="p-2 text-indigo-600 hover:bg-indigo-100 rounded-full" title="Editar">
                             <i class='bx bxs-edit-alt text-xl'></i>
                         </button>
-                        <button data-action="delete-finance" data-id="${t.id}" class="p-2 text-red-600 hover:bg-red-100 rounded-full" title="Excluir">
+                        <button data-action="delete-receivable" data-id="${t.id}" class="p-2 text-red-600 hover:bg-red-100 rounded-full" title="Excluir">
                             <i class='bx bxs-trash-alt text-xl'></i>
                         </button>
                     </div>
@@ -1104,31 +1297,233 @@ const renderTransactionsTable = (transactions, totalRevenue, totalExpense) => {
         `;
     }).join('');
 
-    // Adiciona listener de ações à tabela de finanças
     tbody.addEventListener('click', (e) => {
         const btn = e.target.closest('button');
         if (!btn) return;
-        const transactionId = btn.dataset.id;
-        const transaction = transactions.find(t => t.id === transactionId);
+        const receivableId = btn.dataset.id;
+        const item = receivables.find(t => t.id === receivableId);
 
         switch (btn.dataset.action) {
-            case 'edit-finance': openTransactionFormModal(transaction); break;
-            case 'delete-finance': deleteTransaction(transactionId, transaction.description); break;
+            case 'edit-receivable': openReceivableFormModal(item); break;
+            case 'delete-receivable': deleteReceivable(receivableId, item.patientName); break;
+            case 'receive': updateReceivableStatus(receivableId, 'Recebido'); break;
+            case 'unreceive': updateReceivableStatus(receivableId, 'Aberto'); break;
         }
     });
 };
 
-const deleteTransaction = async (transactionId, description) => {
-    if (!confirm(`Tem certeza que deseja excluir a transação: "${description}"?`)) return;
+const deleteReceivable = async (receivableId, patientName) => {
+    if (!confirm(`Tem certeza que deseja excluir a conta a receber do paciente ${patientName}?`)) return;
 
     try {
-        const transactionRef = db.ref(getFinancialsPath(currentUser.uid) + '/' + transactionId);
-        await transactionRef.remove();
-        
-        showNotification(`Transação excluída com sucesso!`, 'success');
+        await db.ref(getReceivablePath(currentUser.uid) + '/' + receivableId).remove();
+        showNotification(`Conta a Receber excluída com sucesso!`, 'success');
     } catch (e) {
-        showNotification(`Erro ao excluir transação (RTDB): ${e.message}`, 'error');
-        console.error("Erro ao excluir transação (RTDB):", e);
+        showNotification(`Erro ao excluir Conta a Receber (RTDB): ${e.message}`, 'error');
+        console.error("Erro ao excluir Conta a Receber (RTDB):", e);
+    }
+};
+
+const updateReceivableStatus = async (receivableId, newStatus) => {
+    try {
+        await db.ref(getReceivablePath(currentUser.uid) + '/' + receivableId).update({
+            status: newStatus,
+            // A data de recebimento é o momento da atualização
+            receivedDate: newStatus === 'Recebido' ? new Date().toISOString() : null
+        });
+        showNotification(`Conta marcada como ${newStatus}!`, 'success');
+    } catch (e) {
+        showNotification(`Erro ao atualizar status (RTDB): ${e.message}`, 'error');
+    }
+};
+
+// --- Funções CRUD Despesas (Expense) ---
+let expenses = [];
+
+const openExpenseFormModal = (item = null) => {
+    const isEdit = !!item;
+    const modalTitle = isEdit ? `Editar Despesa` : 'Registrar Despesa';
+
+    document.getElementById('modal-title').textContent = modalTitle;
+    document.getElementById('modal-body').innerHTML = `
+        <form id="expense-form" class="space-y-4">
+            <input type="hidden" id="expense-id" value="${isEdit ? item.id : ''}">
+            
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Nota Fiscal/Referência</label>
+                    <input type="text" id="expense-ref" value="${isEdit ? item.ref : ''}" class="w-full p-3 border border-gray-300 rounded-lg" placeholder="Ex: NF 1234, Aluguel Setembro">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Valor (R$)</label>
+                    <input type="number" step="0.01" id="expense-amount" value="${isEdit ? item.amount : ''}" required class="w-full p-3 border border-gray-300 rounded-lg">
+                </div>
+            </div>
+            
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Vencimento</label>
+                    <input type="date" id="expense-due-date" value="${isEdit ? item.dueDate : new Date().toISOString().substring(0, 10)}" required class="w-full p-3 border border-gray-300 rounded-lg">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Fornecedor/Categoria</label>
+                    <input type="text" id="expense-supplier" value="${isEdit ? item.supplier : ''}" class="w-full p-3 border border-gray-300 rounded-lg" placeholder="Ex: Contabilidade, Imobiliária">
+                </div>
+            </div>
+            
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Descrição</label>
+                <textarea id="expense-description" rows="2" required class="w-full p-3 border border-gray-300 rounded-lg resize-none">${isEdit ? item.description : ''}</textarea>
+            </div>
+            
+            <div class="flex justify-end space-x-3 pt-4">
+                <button type="button" id="form-cancel-btn" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg">Cancelar</button>
+                <button type="submit" class="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700">${isEdit ? 'Atualizar' : 'Registrar Despesa'}</button>
+            </div>
+        </form>
+    `;
+
+    document.getElementById('expense-form').addEventListener('submit', saveExpense);
+    document.getElementById('form-cancel-btn').addEventListener('click', closeModal);
+    
+    openModal(modalTitle, 'max-w-xl');
+};
+
+const saveExpense = async (e) => {
+    e.preventDefault();
+    const isEdit = !!document.getElementById('expense-id').value;
+    const expenseId = document.getElementById('expense-id').value;
+
+    const itemData = {
+        id: expenseId || null,
+        ref: document.getElementById('expense-ref').value,
+        supplier: document.getElementById('expense-supplier').value,
+        amount: parseFloat(document.getElementById('expense-amount').value),
+        dueDate: document.getElementById('expense-due-date').value,
+        description: document.getElementById('expense-description').value,
+        registeredAt: new Date().toISOString()
+    };
+
+    try {
+        const expenseRef = db.ref(getExpensePath(currentUser.uid));
+
+        if (isEdit) {
+            await expenseRef.child(expenseId).update(itemData);
+        } else {
+            const newRef = expenseRef.push();
+            itemData.id = newRef.key;
+            await newRef.set(itemData);
+        }
+
+        closeModal();
+        showNotification(`Despesa registrada com sucesso!`, 'success');
+    } catch (e) {
+        showNotification(`Erro ao salvar Despesa (RTDB): ${e.message}`, 'error');
+        console.error("Erro ao salvar Despesa (RTDB):", e);
+    }
+};
+
+const loadExpenses = () => {
+    if (!currentUser) return;
+
+    const expenseRef = db.ref(getExpensePath(currentUser.uid));
+
+    expenseRef.on('value', snapshot => {
+        const itemsObject = snapshot.val();
+        let itemsList = [];
+        let totalExpense = 0;
+        let openCount = 0;
+        let nextDueDate = "N/A";
+        
+        const today = new Date().toISOString().substring(0, 10);
+
+        if (itemsObject) {
+            Object.keys(itemsObject).forEach(key => {
+                const item = { id: key, ...itemsObject[key] };
+                
+                totalExpense += item.amount;
+                
+                // Contagem de contas abertas (não pagas - simples)
+                // Usaremos a lógica de vencimento simples: se venceu ou vence hoje e não está marcada como paga (status implícito)
+                if (item.dueDate >= today) {
+                    openCount++;
+                }
+                
+                // Próximo Vencimento
+                if (item.dueDate >= today && (nextDueDate === "N/A" || item.dueDate < nextDueDate)) {
+                    nextDueDate = item.dueDate;
+                }
+                
+                itemsList.push(item);
+            });
+        }
+        
+        expenses = itemsList;
+        renderExpenseTable(itemsList, totalExpense, openCount, nextDueDate);
+    }, e => showNotification(`Erro ao carregar Despesas (RTDB): ${e.message}`, 'error'));
+};
+
+const renderExpenseTable = (items, totalExpense, openCount, nextDueDate) => {
+    const tbody = document.getElementById('expense-table-body');
+    if (!tbody) return;
+
+    // Atualiza KPIs
+    document.getElementById('total-expense').textContent = formatCurrency(totalExpense);
+    document.getElementById('open-expense-count').textContent = openCount;
+    document.getElementById('next-due-date').textContent = nextDueDate;
+
+    if (items.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="5" class="px-6 py-4 text-center text-gray-500 italic">Nenhuma despesa registrada.</td></tr>`;
+        return;
+    }
+    
+    items.sort((a, b) => new Date(b.dueDate) - new Date(a.dueDate)); // Ordena por data de vencimento (reversa)
+
+    tbody.innerHTML = items.map(t => {
+        let statusClass = 'text-red-600 font-bold';
+        
+        return `
+            <tr class="hover:bg-gray-50 transition-colors">
+                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${t.dueDate}</td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">${t.ref || 'N/A'}</td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">${t.description}</td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm ${statusClass}">${formatCurrency(t.amount)}</td>
+                <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                    <div class="inline-flex space-x-2">
+                        <button data-action="edit-expense" data-id="${t.id}" class="p-2 text-indigo-600 hover:bg-indigo-100 rounded-full" title="Editar">
+                            <i class='bx bxs-edit-alt text-xl'></i>
+                        </button>
+                        <button data-action="delete-expense" data-id="${t.id}" class="p-2 text-red-600 hover:bg-red-100 rounded-full" title="Excluir">
+                            <i class='bx bxs-trash-alt text-xl'></i>
+                        </button>
+                    </div>
+                </td>
+            </tr>
+        `;
+    }).join('');
+
+    tbody.addEventListener('click', (e) => {
+        const btn = e.target.closest('button');
+        if (!btn) return;
+        const expenseId = btn.dataset.id;
+        const item = expenses.find(t => t.id === expenseId);
+
+        switch (btn.dataset.action) {
+            case 'edit-expense': openExpenseFormModal(item); break;
+            case 'delete-expense': deleteExpense(expenseId, item.description); break;
+        }
+    });
+};
+
+const deleteExpense = async (expenseId, description) => {
+    if (!confirm(`Tem certeza que deseja excluir a despesa: "${description}"?`)) return;
+
+    try {
+        await db.ref(getExpensePath(currentUser.uid) + '/' + expenseId).remove();
+        showNotification(`Despesa excluída com sucesso!`, 'success');
+    } catch (e) {
+        showNotification(`Erro ao excluir Despesa (RTDB): ${e.message}`, 'error');
+        console.error("Erro ao excluir Despesa (RTDB):", e);
     }
 };
 
@@ -1151,8 +1546,8 @@ const closeModal = () => {
     if (currentView === 'patients') {
         loadPatients();
     }
+    // Forçamos a recarga do conteúdo financeiro (incluindo abas) ao fechar o modal
     if (currentView === 'financials') {
-        // Forçamos a recarga do conteúdo completo do financial manager para garantir o estado
         renderContent(); 
     }
     // Recarregar KPIs no Dashboard
@@ -1176,12 +1571,18 @@ document.addEventListener('DOMContentLoaded', () => {
         if (auth) {
             auth.signOut().then(() => {
                 showNotification("Logout realizado com sucesso. Recarregando.", "success");
-                window.location.reload();
+                // Força o onAuthStateChanged a recarregar a tela de login
             });
         }
     });
+    
+    // 4. Listener do formulário de Login/Registro
+    const authForm = document.getElementById('auth-form');
+    if (authForm) authForm.addEventListener('submit', handleAuthSubmit);
+    const toggleBtn = document.getElementById('toggle-auth-mode');
+    if (toggleBtn) toggleBtn.addEventListener('click', toggleAuthMode);
 
-    // 4. Listener geral para navegação no corpo principal (após o DOM estar pronto)
+    // 5. Listener geral para navegação no corpo principal (após o DOM estar pronto)
     // Opcional, mas útil para botões dinâmicos.
     document.getElementById('main-content').addEventListener('click', (e) => {
         // Exemplo: if (e.target.closest('#some-button')) { ... }
