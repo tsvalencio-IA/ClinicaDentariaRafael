@@ -15,10 +15,8 @@ let currentView = 'dashboard';
 // ==================================================================
 
 // Caminhos do Realtime Database (RTDB)
-// O RTDB usa um caminho baseado em strings (ex: artifacts/dentista-inteligente-app/users/UID/patients)
 const getAdminCollectionPath = (uid, collectionName) => `artifacts/${appId}/users/${uid}/${collectionName}`;
 const getJournalCollectionPath = (patientId) => `artifacts/${appId}/patients/${patientId}/journal`;
-// Novo caminho para Estoque
 const getStockCollectionPath = (uid) => `artifacts/${appId}/users/${uid}/stock`;
 
 
@@ -212,7 +210,7 @@ const loadDashboardKPIs = () => {
         document.getElementById('dashboard-patients-count').textContent = patientCount;
     });
 
-    // Conta Itens de Estoque (será implementado no próximo passo)
+    // Conta Itens de Estoque
     const stockRef = db.ref(getStockCollectionPath(currentUser.uid));
     stockRef.once('value', snapshot => {
         const stockCount = snapshot.val() ? Object.keys(snapshot.val()).length : 0;
