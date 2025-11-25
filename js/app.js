@@ -1,6 +1,6 @@
 // ==================================================================
-// MÓDULO PRINCIPAL - DENTISTA INTELIGENTE (ESTABILIDADE MÁXIMA)
-// RESOLVE SYNTAXERROR POR MEIO DE ENCAPSULAMENTO TOTAL (IIFE)
+// MÓDULO PRINCIPAL - DENTISTA INTELIGENTE (AGORA TOTALMENTE ENCAPSULADO)
+// ESTA VERSÃO CORRIGE O SYNTAXERROR (allPatients already declared)
 // ==================================================================
 (function() {
     
@@ -340,7 +340,7 @@ const renderDashboard = (container) => {
                     <i class='bx bxs-brain text-xl mr-2'></i> Alimentar o BRAIN (Diretrizes da IA)
                 </h3>
                 <p class="text-gray-600 mb-4 text-sm">Defina as regras. Use: <code>Variável de Tratamento: [TIPO]</code> e <code>Meta: [META]</code>.</p>
-                <textarea id="brain-input" rows="5" class="w-full p-3 border border-indigo-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 shadow-inner resize-none" placeholder="Ex: 'Atuar como assistente de ortodontia. Focar em higiene e uso de elásticos. Variável de Tratamento: [TIPO]. Meta: [META].'"></textarea>
+                <textarea id="brain-input" rows="5" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 shadow-inner resize-none" placeholder="Ex: 'Atuar como assistente de ortodontia. Focar em higiene e uso de elásticos. Variável de Tratamento: [TIPO]. Meta: [META].'"></textarea>
                 <div class="flex justify-between items-center mt-4">
                     <button id="save-brain-btn" class="py-3 px-6 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg transition duration-200 shadow-md">
                         <i class='bx bxs-save text-xl mr-2'></i> Salvar Diretrizes
