@@ -3,7 +3,6 @@
 // ==================================================================
 
 // Variáveis Globais (Definidas em config.js e Injetadas pelo ambiente)
-// CORREÇÃO: Usamos um objeto 'config' e acessamos as propriedades diretamente para evitar o SyntaxError.
 const config = window.AppConfig;
 const appId = config.APP_ID; 
 
@@ -15,9 +14,13 @@ let currentView = 'dashboard';
 // FUNÇÕES AUXILIARES
 // ==================================================================
 
-// Caminhos do Firestore (para segurança multi-tenant por Dentista)
+// Caminhos do Realtime Database (RTDB)
+// O RTDB usa um caminho baseado em strings (ex: artifacts/dentista-inteligente-app/users/UID/patients)
 const getAdminCollectionPath = (uid, collectionName) => `artifacts/${appId}/users/${uid}/${collectionName}`;
 const getJournalCollectionPath = (patientId) => `artifacts/${appId}/patients/${patientId}/journal`;
+// Novo caminho para Estoque
+const getStockCollectionPath = (uid) => `artifacts/${appId}/users/${uid}/stock`;
+
 
 // Funções de Formatação (para UI)
 const formatFileName = (name) => {
@@ -57,7 +60,6 @@ const formatCurrency = (value) => `R$ ${parseFloat(value || 0).toFixed(2).replac
 
 // --- Conexão Firebase ---
 const initializeFirebase = async () => {
-    // USANDO config.firebaseConfig
     if (Object.keys(config.firebaseConfig).length === 0) {
         showNotification("ERRO: Configuração do Firebase está vazia. Verifique a injeção do ambiente.", "error");
         return;
@@ -65,22 +67,20 @@ const initializeFirebase = async () => {
     
     try {
         if (!firebase.apps.length) {
-            // USANDO config.firebaseConfig
             firebase.initializeApp(config.firebaseConfig);
         }
         
-        // Usando Firestore (melhor para dados estruturados e segurança)
-        db = firebase.firestore();
+        // CORREÇÃO: Usando Realtime Database (RTDB)
+        db = firebase.database();
         auth = firebase.auth();
         
         // Tenta autenticar o usuário Dentista/Admin
         let user;
-        // USANDO config.initialAuthToken
         if (config.initialAuthToken) {
              const userCredential = await auth.signInWithCustomToken(config.initialAuthToken);
              user = userCredential.user;
         } else {
-             // Fallback para login anônimo se não houver token (para testes)
+             // Fallback para login anônimo (deve estar habilitado no console!)
              const userCredential = await auth.signInAnonymously();
              user = userCredential.user;
         }
@@ -126,7 +126,6 @@ const highlightNavItem = (viewId) => {
 
 const renderSidebar = () => {
     const navMenu = document.getElementById('nav-menu');
-    // USANDO config.NAV_ITEMS
     navMenu.innerHTML = config.NAV_ITEMS.map(item => `
         <button data-view="${item.id}" class="flex items-center p-3 rounded-xl transition-all duration-200 w-full text-left text-indigo-200 hover:bg-indigo-700 hover:text-white">
             <i class='bx ${item.icon} text-xl mr-3'></i>
@@ -144,7 +143,6 @@ const renderContent = () => {
     const mainContent = document.getElementById('main-content');
     mainContent.innerHTML = ''; 
     
-    // Simulação da Lógica do Componente React (Renderização da View)
     switch (currentView) {
         case 'dashboard':
             renderDashboard(mainContent);
@@ -162,7 +160,7 @@ const renderContent = () => {
 
 
 // ==================================================================
-// MÓDULOS DE RENDERIZAÇÃO (Implementação dos Módulos do Projeto)
+// MÓDULOS DE RENDERIZAÇÃO
 // ==================================================================
 
 // --- 1. DASHBOARD E BRAIN ---
@@ -174,8 +172,8 @@ const renderDashboard = (container) => {
             </h2>
 
             <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-10">
-                <div class="p-4 bg-indigo-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Pacientes</p><p class="text-2xl font-bold text-indigo-800">0</p></div>
-                <div class="p-4 bg-cyan-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Ativos IA</p><p class="text-2xl font-bold text-cyan-800">0</p></div>
+                <div class="p-4 bg-indigo-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Pacientes</p><p class="text-2xl font-bold text-indigo-800"><span id="dashboard-patients-count">0</span></p></div>
+                <div class="p-4 bg-cyan-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Itens Estoque</p><p class="text-2xl font-bold text-cyan-800"><span id="dashboard-stock-count">0</span></p></div>
                 <div class="p-4 bg-green-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Lucro Est.</p><p class="text-2xl font-bold text-green-800">${formatCurrency(0)}</p></div>
                 <div class="p-4 bg-red-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Alertas Est.</p><p class="text-2xl font-bold text-red-800">0</p></div>
             </div>
@@ -200,21 +198,39 @@ const renderDashboard = (container) => {
         </div>
     `;
 
-    // Adicionar Lógica para o BRAIN
+    // Adicionar Lógica para o BRAIN (RTDB ADAPTADO)
     loadBrainConfig();
     document.getElementById('save-brain-btn').addEventListener('click', saveBrainConfig);
+    loadDashboardKPIs(); // Nova função para carregar contagens
 };
 
+const loadDashboardKPIs = () => {
+    // Conta Pacientes
+    const patientRef = db.ref(getAdminCollectionPath(currentUser.uid, 'patients'));
+    patientRef.once('value', snapshot => {
+        const patientCount = snapshot.val() ? Object.keys(snapshot.val()).length : 0;
+        document.getElementById('dashboard-patients-count').textContent = patientCount;
+    });
+
+    // Conta Itens de Estoque (será implementado no próximo passo)
+    const stockRef = db.ref(getStockCollectionPath(currentUser.uid));
+    stockRef.once('value', snapshot => {
+        const stockCount = snapshot.val() ? Object.keys(snapshot.val()).length : 0;
+        document.getElementById('dashboard-stock-count').textContent = stockCount;
+    });
+}
+
 const loadBrainConfig = () => {
-    const docRef = db.collection(`artifacts/${appId}/users/${currentUser.uid}/aiConfig`).doc('directives');
-    docRef.get().then(doc => {
+    // RTDB ADAPTADO: Usando .once('value') para carregar dados
+    const brainRef = db.ref(getAdminCollectionPath(currentUser.uid, 'aiConfig') + '/directives');
+    brainRef.once('value').then(snapshot => {
         const brainInput = document.getElementById('brain-input');
-        if (doc.exists) {
-            brainInput.value = doc.data().promptDirectives;
+        if (snapshot.exists()) {
+            brainInput.value = snapshot.val().promptDirectives;
         } else {
             brainInput.value = "Atuar como assistente. Variável de Tratamento: [TIPO]. Meta: [META]. Focar em higiene e progresso.";
         }
-    }).catch(e => console.error("Erro ao carregar BRAIN:", e));
+    }).catch(e => console.error("Erro ao carregar BRAIN (RTDB):", e));
 };
 
 const saveBrainConfig = () => {
@@ -226,19 +242,20 @@ const saveBrainConfig = () => {
         return;
     }
     
-    const docRef = db.collection(`artifacts/${appId}/users/${currentUser.uid}/aiConfig`).doc('directives');
-    docRef.set({
+    // RTDB ADAPTADO: Usando .set() para salvar dados
+    const brainRef = db.ref(getAdminCollectionPath(currentUser.uid, 'aiConfig') + '/directives');
+    brainRef.set({
         promptDirectives: prompt,
-        lastUpdated: firebase.firestore.FieldValue.serverTimestamp(),
+        lastUpdated: new Date().toISOString(), // Não há serverTimestamp nativo, usamos ISO String
         status: 'Online'
     }).then(() => {
         msgEl.textContent = 'BRAIN alimentado! Sucesso.';
         msgEl.classList.replace('text-red-600', 'text-indigo-700');
         setTimeout(() => msgEl.textContent = '', 3000);
     }).catch(e => {
-        msgEl.textContent = 'Erro ao salvar: ' + e.message;
+        msgEl.textContent = 'Erro ao salvar (RTDB): ' + e.message;
         msgEl.classList.replace('text-indigo-700', 'text-red-600');
-        console.error("Erro ao salvar BRAIN:", e);
+        console.error("Erro ao salvar BRAIN (RTDB):", e);
     });
 };
 
@@ -283,7 +300,6 @@ const openPatientFormModal = (patient = null) => {
     const isEdit = !!patient;
     const modalTitle = isEdit ? `Editar Paciente: ${patient.name}` : 'Novo Paciente';
     
-    // Renderiza o formulário dentro do modal
     document.getElementById('modal-title').textContent = modalTitle;
     document.getElementById('modal-body').innerHTML = `
         <form id="patient-form" class="space-y-4">
@@ -335,13 +351,11 @@ const openPatientFormModal = (patient = null) => {
         </form>
     `;
     
-    // Pré-seleciona valores existentes
     if (isEdit) {
         document.getElementById('patient-treatment-type').value = patient.treatmentType || 'Geral';
         document.getElementById('patient-status').value = patient.status || 'Novo Cadastro';
     }
 
-    // Adiciona listeners para o formulário
     document.getElementById('patient-form').addEventListener('submit', savePatient);
     document.getElementById('form-cancel-btn').addEventListener('click', closeModal);
     
@@ -350,11 +364,12 @@ const openPatientFormModal = (patient = null) => {
 
 const savePatient = async (e) => {
     e.preventDefault();
+    // No RTDB usamos .push() para novos IDs, ou o ID existente para update.
     const isEdit = !!document.getElementById('patient-id').value;
-    const patientId = document.getElementById('patient-id').value || db.collection('dummy').doc().id; // Gera um ID único se for novo
+    const patientId = document.getElementById('patient-id').value; 
     
     const patientData = { 
-        id: patientId,
+        id: patientId || null, // Será preenchido pelo push().key se for novo
         name: document.getElementById('patient-name').value,
         email: document.getElementById('patient-email').value,
         treatmentType: document.getElementById('patient-treatment-type').value,
@@ -364,27 +379,46 @@ const savePatient = async (e) => {
     };
     
     try {
-        const docRef = db.collection(getAdminCollectionPath(currentUser.uid, 'patients')).doc(patientId);
-        await docRef.set(patientData, { merge: true });
+        const patientsRef = db.ref(getAdminCollectionPath(currentUser.uid, 'patients'));
+
+        if (isEdit) {
+            // Update: Define o dado no nó existente
+            await patientsRef.child(patientId).update(patientData);
+        } else {
+            // Novo: Usa push() para gerar um ID (key)
+            const newRef = patientsRef.push();
+            patientData.id = newRef.key;
+            await newRef.set(patientData);
+        }
         
         closeModal();
         showNotification(`Paciente ${patientData.name} salvo com sucesso!`, 'success');
     } catch (e) {
-        showNotification(`Erro ao salvar paciente: ${e.message}`, 'error');
-        console.error("Erro ao salvar paciente:", e);
+        showNotification(`Erro ao salvar paciente (RTDB): ${e.message}`, 'error');
+        console.error("Erro ao salvar paciente (RTDB):", e);
     }
 };
 
 let allPatients = [];
 
 const loadPatients = () => {
-    const qRef = db.collection(getAdminCollectionPath(currentUser.uid, 'patients'));
+    // RTDB ADAPTADO: Usando .on('value') para real-time listener
+    const patientsRef = db.ref(getAdminCollectionPath(currentUser.uid, 'patients'));
     
-    qRef.onSnapshot(snapshot => {
-        const patientsList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    patientsRef.on('value', snapshot => {
+        const patientsObject = snapshot.val();
+        const patientsList = [];
+        
+        if (patientsObject) {
+            // Transforma o objeto de nós em uma lista de objetos
+            Object.keys(patientsObject).forEach(key => {
+                patientsList.push({ id: key, ...patientsObject[key] });
+            });
+        }
+        
         allPatients = patientsList;
         renderPatientsTable(patientsList);
-    }, e => showNotification(`Erro ao carregar lista de pacientes: ${e.message}`, 'error'));
+    }, e => showNotification(`Erro ao carregar lista de pacientes (RTDB): ${e.message}`, 'error'));
 };
 
 const renderPatientsTable = (patients) => {
@@ -422,7 +456,6 @@ const renderPatientsTable = (patients) => {
         </tr>
     `).join('');
 
-    // Adicionar listeners de ação à tabela
     tbody.addEventListener('click', (e) => {
         const btn = e.target.closest('button');
         if (!btn) return;
@@ -442,20 +475,18 @@ const deletePatient = async (patientId, patientName) => {
     if (!confirm(`Tem certeza que deseja excluir o paciente ${patientName} e todo o seu histórico de diário?`)) return;
 
     try {
-        // Exclui o documento principal do paciente
-        await db.collection(getAdminCollectionPath(currentUser.uid, 'patients')).doc(patientId).delete();
+        // RTDB ADAPTADO: Remoção usando .remove()
+        const patientRef = db.ref(getAdminCollectionPath(currentUser.uid, 'patients') + '/' + patientId);
+        await patientRef.remove();
         
-        // Exclui as entradas do diário (simulação de exclusão em cascata)
-        const journalRef = db.collection(getJournalCollectionPath(patientId));
-        const snapshot = await journalRef.get();
-        const batch = db.batch();
-        snapshot.docs.forEach(doc => batch.delete(doc.ref));
-        await batch.commit();
+        // Simulação de exclusão em cascata do diário
+        const journalRef = db.ref(getJournalCollectionPath(patientId));
+        await journalRef.remove();
 
         showNotification(`Paciente ${patientName} excluído com sucesso!`, 'success');
     } catch (e) {
-        showNotification(`Erro ao excluir: ${e.message}`, 'error');
-        console.error("Erro ao excluir paciente:", e);
+        showNotification(`Erro ao excluir (RTDB): ${e.message}`, 'error');
+        console.error("Erro ao excluir paciente (RTDB):", e);
     }
 };
 
@@ -495,7 +526,6 @@ const openJournalModal = (patient) => {
         </div>
     `;
     
-    // Adicionar Lógica do Diário
     setupJournalListeners(patient);
     openModal(`Diário: ${patient.name}`, 'max-w-4xl');
 };
@@ -511,14 +541,12 @@ const setupJournalListeners = (patient) => {
     
     let currentFile = null;
 
-    // Listener para o input de arquivo
     mediaInput.addEventListener('change', (e) => {
         currentFile = e.target.files[0] || null;
         fileNameDisplay.textContent = currentFile ? formatFileName(currentFile.name) : '';
     });
     mediaBtn.addEventListener('click', () => mediaInput.click());
 
-    // Listener para o botão de Envio (Dentista)
     sendBtn.addEventListener('click', () => {
         sendJournalEntry(patient, responseInput.value, 'Dentista', currentFile);
         responseInput.value = '';
@@ -526,15 +554,23 @@ const setupJournalListeners = (patient) => {
         fileNameDisplay.textContent = '';
     });
     
-    // Listener para o botão de Ajuda da IA
     askAiBtn.addEventListener('click', () => handleAIRequest(patient));
 
-    // Listener Firestore para o Diário
-    const journalRef = db.collection(getJournalCollectionPath(patient.id));
-    journalRef.orderBy('timestamp', 'desc').onSnapshot(snapshot => {
-        const entries = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    // RTDB ADAPTADO: Listener para o Diário
+    const journalRef = db.ref(getJournalCollectionPath(patient.id));
+    journalRef.orderByChild('timestamp').on('value', snapshot => {
+        const entriesObject = snapshot.val();
+        const entries = [];
+        if (entriesObject) {
+            Object.keys(entriesObject).forEach(key => {
+                 // RTDB não tem um objeto Date, então usamos o new Date(ISO String)
+                entries.push({ id: key, ...entriesObject[key], timestamp: new Date(entriesObject[key].timestamp) });
+            });
+        }
+        // O RTDB ordena do mais antigo para o mais novo, precisamos inverter para mostrar o mais recente em cima.
+        entries.reverse();
         renderJournalEntries(timeline, entries);
-    }, e => showNotification(`Erro ao carregar diário: ${e.message}`, 'error'));
+    }, e => showNotification(`Erro ao carregar diário (RTDB): ${e.message}`, 'error'));
 };
 
 const sendJournalEntry = async (patient, text, author, file) => {
@@ -544,34 +580,32 @@ const sendJournalEntry = async (patient, text, author, file) => {
     let uploadPromise = Promise.resolve(null);
     
     if (file) {
-        // UPLOAD REAL: Chama a função Cloudinary
         uploadPromise = window.uploadToCloudinary(file).then(res => {
             showNotification(`Arquivo ${file.name} enviado para Cloudinary!`, 'success');
             return res;
         }).catch(error => {
             showNotification(`Falha ao carregar arquivo: ${error.message}`, 'error');
-            return null; // Não envia a entrada se o upload falhar
+            return null;
         });
     }
 
-    // Aguarda o upload do arquivo (se houver)
     mediaData = await uploadPromise;
 
-    // Se houver texto ou o upload foi bem-sucedido, prossegue com o envio da entrada.
     if (!text.trim() && !mediaData) return;
     
     const entryData = {
         text: text.trim(),
         author: author,
         isAI: author.includes('IA'),
-        timestamp: firebase.firestore.FieldValue.serverTimestamp(),
+        timestamp: new Date().toISOString(), // Usamos ISO String para o RTDB
         media: mediaData
     };
 
     try {
-        await db.collection(getJournalCollectionPath(patient.id)).add(entryData);
+        // RTDB ADAPTADO: Usando .push() para criar um novo nó de entrada
+        await db.ref(getJournalCollectionPath(patient.id)).push(entryData);
     } catch (e) {
-        showNotification(`Erro ao enviar entrada: ${e.message}`, 'error');
+        showNotification(`Erro ao enviar entrada (RTDB): ${e.message}`, 'error');
     }
 };
 
@@ -581,10 +615,10 @@ const handleAIRequest = async (patient) => {
     askAiBtn.innerHTML = "<i class='bx bx-loader-alt bx-spin text-xl mr-2'></i> IA Pensando...";
     
     try {
-        // 1. Obter as diretrizes do BRAIN
-        const brainDocRef = db.collection(`artifacts/${appId}/users/${currentUser.uid}/aiConfig`).doc('directives');
-        const brainSnap = await brainDocRef.get();
-        const directives = brainSnap.exists ? brainSnap.data().promptDirectives : 'Atuar como assistente padrão de clínica odontológica.';
+        // 1. Obter as diretrizes do BRAIN (RTDB ADAPTADO)
+        const brainRef = db.ref(getAdminCollectionPath(currentUser.uid, 'aiConfig') + '/directives');
+        const brainSnap = await brainRef.once('value');
+        const directives = brainSnap.exists() ? brainSnap.val().promptDirectives : 'Atuar como assistente padrão de clínica odontológica.';
         
         // 2. Personalizar o Prompt de Sistema
         const systemPrompt = directives
@@ -594,7 +628,7 @@ const handleAIRequest = async (patient) => {
         // 3. Montar a Mensagem do Usuário (Contexto)
         const userMessage = `Você é o assistente do Dr(a). ${currentUser.email}. O paciente ${patient.name} com tratamento "${patient.treatmentType}" e meta "${patient.treatmentGoal}" acaba de solicitar uma orientação/status. Responda-o com base nas diretrizes. Use um tom encorajador e profissional.`;
 
-        // 4. CHAMA A FUNÇÃO REAL DA API (Implementada em js/ai.js)
+        // 4. CHAMA A FUNÇÃO REAL DA API
         const geminiResponseText = await window.callGeminiAPI(systemPrompt, userMessage);
         
         // 5. Enviar a resposta da IA para o Diário
@@ -631,7 +665,7 @@ const renderJournalEntries = (container, entries) => {
                         ${entry.author}
                     </span>
                     <span class="text-xs text-gray-500">
-                        ${entry.timestamp ? formatDateTime(entry.timestamp.toDate().toISOString()) : 'Carregando...'}
+                        ${entry.timestamp ? formatDateTime(entry.timestamp.toISOString()) : 'Carregando...'}
                     </span>
                 </div>
                 <p class="text-gray-800 text-sm whitespace-pre-wrap">${entry.text}</p>
@@ -642,7 +676,7 @@ const renderJournalEntries = (container, entries) => {
 };
 
 
-// --- 3. GESTÃO FINANCEIRA ---
+// --- 3. GESTÃO FINANCEIRA (INCLUINDO ESTOQUE/MATERIAIS) ---
 const renderFinancialManager = (container) => {
     container.innerHTML = `
         <div class="p-8 bg-white shadow-2xl rounded-2xl border border-indigo-100">
@@ -650,16 +684,204 @@ const renderFinancialManager = (container) => {
                 <i class='bx bxs-wallet text-3xl mr-3 text-indigo-600'></i> Gestão Financeira e Estoque
             </h2>
             
-            <p class="text-gray-600">Módulo em desenvolvimento. Aqui faremos o CRUD completo de Materiais, Equipamentos, Despesas e Procedimentos, adaptando a lógica do Techmess ERP.</p>
-            
-            <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
-                 <div class="p-4 bg-yellow-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Contas a Pagar</p><p class="text-2xl font-bold text-yellow-800">${formatCurrency(1250)}</p></div>
-                 <div class="p-4 bg-green-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Próxima Receita</p><p class="text-2xl font-bold text-green-800">${formatCurrency(3400)}</p></div>
+            <div class="flex justify-between items-center mb-6 border-b pb-4">
+                <h3 class="text-2xl font-semibold text-gray-700">Inventário de Materiais</h3>
+                <button id="add-stock-btn" class="py-2 px-4 bg-green-600 hover:bg-green-700 text-white font-bold rounded-lg transition duration-200 shadow-md flex items-center justify-center">
+                    <i class='bx bx-plus-circle text-xl mr-2'></i> Novo Item
+                </button>
+            </div>
+
+            <div class="overflow-x-auto bg-gray-50 rounded-xl shadow-inner border border-gray-200">
+                <table class="min-w-full divide-y divide-gray-200">
+                    <thead class="bg-gray-200">
+                        <tr>
+                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Material</th>
+                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Qtde</th>
+                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Custo Médio</th>
+                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Fornecedor</th>
+                            <th class="px-6 py-3 text-right text-xs font-bold text-gray-600 uppercase">Ações</th>
+                        </tr>
+                    </thead>
+                    <tbody id="stock-table-body" class="bg-white divide-y divide-gray-200">
+                        <tr><td colspan="5" class="px-6 py-4 text-center text-gray-500 italic">Carregando estoque...</td></tr>
+                    </tbody>
+                </table>
             </div>
         </div>
     `;
+    document.getElementById('add-stock-btn').addEventListener('click', () => openStockFormModal());
+    loadStock();
 };
 
+let stockItems = [];
+
+const loadStock = () => {
+    // RTDB CRUD: Load (Read)
+    const stockRef = db.ref(getStockCollectionPath(currentUser.uid));
+    
+    stockRef.on('value', snapshot => {
+        const itemsObject = snapshot.val();
+        const itemsList = [];
+        
+        if (itemsObject) {
+            Object.keys(itemsObject).forEach(key => {
+                itemsList.push({ id: key, ...itemsObject[key] });
+            });
+        }
+        
+        stockItems = itemsList;
+        renderStockTable(itemsList);
+    }, e => showNotification(`Erro ao carregar estoque (RTDB): ${e.message}`, 'error'));
+};
+
+const renderStockTable = (items) => {
+    const tbody = document.getElementById('stock-table-body');
+    if (!tbody) return;
+
+    if (items.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="5" class="px-6 py-4 text-center text-gray-500 italic">Nenhum item de estoque cadastrado.</td></tr>`;
+        return;
+    }
+
+    tbody.innerHTML = items.map(item => `
+        <tr class="hover:bg-gray-50 transition-colors">
+            <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">${item.name}</td>
+            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${item.quantity} ${item.unit}</td>
+            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${formatCurrency(item.cost)}</td>
+            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${item.supplier || 'N/A'}</td>
+            <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                <div class="flex justify-end space-x-2">
+                    <button data-action="edit" data-id="${item.id}" class="p-2 text-indigo-600 hover:bg-indigo-100 rounded-full" title="Editar">
+                        <i class='bx bxs-edit-alt text-xl'></i>
+                    </button>
+                    <button data-action="delete" data-id="${item.id}" class="p-2 text-red-600 hover:bg-red-100 rounded-full" title="Excluir">
+                        <i class='bx bxs-trash-alt text-xl'></i>
+                    </button>
+                </div>
+            </td>
+        </tr>
+    `).join('');
+
+    tbody.addEventListener('click', (e) => {
+        const btn = e.target.closest('button');
+        if (!btn) return;
+        const itemId = btn.dataset.id;
+        const item = items.find(i => i.id === itemId);
+
+        switch (btn.dataset.action) {
+            case 'edit': openStockFormModal(item); break;
+            case 'delete': deleteStockItem(itemId, item.name); break;
+        }
+    });
+};
+
+const openStockFormModal = (item = null) => {
+    const isEdit = !!item;
+    const modalTitle = isEdit ? `Editar Material: ${item.name}` : 'Novo Item de Estoque';
+    
+    document.getElementById('modal-title').textContent = modalTitle;
+    document.getElementById('modal-body').innerHTML = `
+        <form id="stock-form" class="space-y-4">
+            <input type="hidden" id="item-id" value="${isEdit ? item.id : ''}">
+            
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Nome do Material</label>
+                    <input type="text" id="item-name" value="${isEdit ? item.name : ''}" required class="w-full p-3 border border-gray-300 rounded-lg">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Fornecedor</label>
+                    <input type="text" id="item-supplier" value="${isEdit ? item.supplier : ''}" class="w-full p-3 border border-gray-300 rounded-lg">
+                </div>
+            </div>
+            
+            <div class="grid grid-cols-3 gap-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Quantidade</label>
+                    <input type="number" id="item-quantity" value="${isEdit ? item.quantity : 1}" min="0" required class="w-full p-3 border border-gray-300 rounded-lg">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Unidade</label>
+                    <select id="item-unit" required class="w-full p-3 border border-gray-300 rounded-lg">
+                        <option value="un">Unidade (un)</option>
+                        <option value="ml">Mililitros (ml)</option>
+                        <option value="g">Gramas (g)</option>
+                        <option value="cx">Caixa (cx)</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Custo Médio (R$)</label>
+                    <input type="number" step="0.01" id="item-cost" value="${isEdit ? item.cost : ''}" required class="w-full p-3 border border-gray-300 rounded-lg">
+                </div>
+            </div>
+            
+            <div class="flex justify-end space-x-3 pt-4">
+                <button type="button" id="form-cancel-btn" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg">Cancelar</button>
+                <button type="submit" class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700">${isEdit ? 'Atualizar' : 'Cadastrar'}</button>
+            </div>
+        </form>
+    `;
+    
+    if (isEdit) {
+        document.getElementById('item-unit').value = item.unit || 'un';
+    }
+
+    document.getElementById('stock-form').addEventListener('submit', saveStockItem);
+    document.getElementById('form-cancel-btn').addEventListener('click', closeModal);
+    
+    openModal(modalTitle, 'max-w-xl');
+};
+
+const saveStockItem = async (e) => {
+    e.preventDefault();
+    const isEdit = !!document.getElementById('item-id').value;
+    const itemId = document.getElementById('item-id').value;
+    
+    const itemData = {
+        id: itemId || null,
+        name: document.getElementById('item-name').value,
+        supplier: document.getElementById('item-supplier').value,
+        quantity: parseFloat(document.getElementById('item-quantity').value),
+        unit: document.getElementById('item-unit').value,
+        cost: parseFloat(document.getElementById('item-cost').value),
+        lastUpdated: new Date().toISOString()
+    };
+    
+    try {
+        const stockRef = db.ref(getStockCollectionPath(currentUser.uid));
+
+        if (isEdit) {
+            // RTDB CRUD: Update (usando .update())
+            await stockRef.child(itemId).update(itemData);
+        } else {
+            // RTDB CRUD: Create (usando .push())
+            const newRef = stockRef.push();
+            itemData.id = newRef.key;
+            await newRef.set(itemData);
+        }
+        
+        closeModal();
+        showNotification(`Item ${itemData.name} salvo com sucesso!`, 'success');
+    } catch (e) {
+        showNotification(`Erro ao salvar item (RTDB): ${e.message}`, 'error');
+        console.error("Erro ao salvar item (RTDB):", e);
+    }
+};
+
+const deleteStockItem = async (itemId, itemName) => {
+    if (!confirm(`Tem certeza que deseja excluir o item de estoque ${itemName}?`)) return;
+
+    try {
+        // RTDB CRUD: Delete (usando .remove())
+        const itemRef = db.ref(getStockCollectionPath(currentUser.uid) + '/' + itemId);
+        await itemRef.remove();
+        
+        showNotification(`Item ${itemName} excluído com sucesso!`, 'success');
+    } catch (e) {
+        showNotification(`Erro ao excluir item (RTDB): ${e.message}`, 'error');
+        console.error("Erro ao excluir item (RTDB):", e);
+    }
+};
 
 // --- Funções de Modal ---
 const openModal = (title, maxWidth = 'max-w-xl') => {
@@ -675,9 +897,17 @@ const closeModal = () => {
     document.getElementById('app-modal').classList.add('hidden');
     document.getElementById('app-modal').classList.remove('flex');
     document.getElementById('modal-body').innerHTML = ''; // Limpa o corpo
-    // Se o modal foi fechado, garantimos que a lista de pacientes é recarregada para sincronizar o estado
+    
+    // Recarregar os dados necessários ao fechar um modal
     if (currentView === 'patients') {
         loadPatients();
+    }
+    if (currentView === 'financials') {
+        loadStock();
+    }
+    // Recarregar KPIs no Dashboard
+    if (document.getElementById('dashboard-patients-count')) {
+        loadDashboardKPIs();
     }
 };
 
