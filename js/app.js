@@ -1,9 +1,7 @@
 // ==================================================================
-// MÓDULO PRINCIPAL - DENTISTA INTELIGENTE (AGORA TOTALMENTE ENCAPSULADO)
-// ESTA VERSÃO CORRIGE O SYNTAXERROR (allPatients already declared)
+// MÓDULO PRINCIPAL - DENTISTA INTELIGENTE
 // ==================================================================
-(function() {
-    
+
 // Variáveis Globais (Definidas em config.js e Injetadas pelo ambiente)
 const config = window.AppConfig;
 const appId = config.APP_ID; 
@@ -11,15 +9,7 @@ const appId = config.APP_ID;
 let db, auth;
 let currentUser = null;
 let currentView = 'dashboard';
-let isLoginMode = true; 
-// VARIÁVEIS DE DADOS GLOBAIS DENTRO DO ESCOPO ISOLADO (CORRIGIDO PARA SINTAXE)
-let allPatients = []; 
-let receivables = []; 
-let stockItems = []; 
-let receivableMaterialsCache = {}; 
-let expenses = []; 
-let expensePurchasedItemsCache = {}; 
-
+let isLoginMode = true; // Novo estado para o form de login
 
 // ==================================================================
 // FUNÇÕES AUXILIARES
@@ -34,7 +24,7 @@ const getExpensePath = (uid) => `artifacts/${appId}/users/${uid}/finance/expense
 const getReceivablePath = (uid) => `artifacts/${appId}/users/${uid}/finance/receivable`; 
 // Caminho para materiais vinculados
 const getReceivableMaterialsPath = (receivableId) => `${getReceivablePath(currentUser.uid)}/${receivableId}/materials`;
-const getExpensePurchasedItemsPath = (expenseId) => `${getExpensePath(currentUser.uid)}/${expenseId}/purchasedItems`; 
+const getExpensePurchasedItemsPath = (expenseId) => `${getExpensePath(currentUser.uid)}/${expenseId}/purchasedItems`; // NOVO CAMINHO
 
 // Funções de Formatação (para UI)
 const formatFileName = (name) => {
@@ -64,8 +54,10 @@ const formatDateTime = (isoString) => {
 
 // Funções de Inicialização e Utilitários
 const showNotification = (message, type = 'success') => {
+    // Implementação de notificação na UI (simplificada para console)
     const logType = type === 'error' ? 'ERROR' : (type === 'warning' ? 'WARN' : 'INFO');
     console.log(`[NOTIFICAÇÃO ${logType}]: ${message}`);
+    // No futuro, adicionaríamos a lógica visual de notificação que você tinha no Chevron
 };
 
 const formatCurrency = (value) => `R$ ${parseFloat(value || 0).toFixed(2).replace('.', ',')}`;
@@ -74,29 +66,17 @@ const formatCurrency = (value) => `R$ ${parseFloat(value || 0).toFixed(2).replac
 // MÓDULO DE AUTENTICAÇÃO E INICIALIZAÇÃO
 // ==================================================================
 
-// Função que monitora o estado de autenticação (AGORA BUSCA O PERFIL)
+// Função que monitora o estado de autenticação
 const setupAuthStateListener = () => {
     auth.onAuthStateChanged(async (user) => {
         if (user) {
+            // Usuário logado (agora por email/senha)
             currentUser = { uid: user.uid, email: user.email || 'Admin Anônimo' };
-            
-            // 1. Busca o perfil/role do usuário no RTDB
-            const profileRef = db.ref(`artifacts/${appId}/users/${user.uid}/profile`);
-            const snapshot = await profileRef.once('value');
-            const profile = snapshot.val();
-            
-            if (profile && profile.role === 'dentist') {
-                currentUser.role = 'dentist';
-                showUI(); // Carrega a interface completa do Dentista
-            } else {
-                currentUser.role = 'unknown'; // Define como desconhecido ou paciente
-                showRoleRestrictedUI(); // Mostra tela de acesso negado
-            }
-
+            showUI(); // Carrega a interface principal
         } else {
             // Usuário deslogado
             currentUser = null;
-            showLoginScreen(); // Exibe a tela de login
+            showLoginScreen(true); // Exibe a tela de login
         }
     });
 };
@@ -115,6 +95,7 @@ const initializeFirebase = async () => {
         db = firebase.database();
         auth = firebase.auth();
         
+        // Configuramos o listener e ele controlará o fluxo
         setupAuthStateListener();
         
     } catch (error) {
@@ -123,69 +104,34 @@ const initializeFirebase = async () => {
     }
 };
 
-const showLoginScreen = () => {
+const showLoginScreen = (isInitial = false) => {
     // Esconde a tela de loading/app, mostra a tela de login
     document.getElementById('login-screen').classList.remove('hidden');
     document.getElementById('app-container').classList.add('hidden');
     
-    // Força a mensagem de login
-    const loginContent = document.getElementById('login-screen').querySelector('.bg-white');
-    // Reinicializa a tela de login no caso de um "Acesso Negado" anterior
-    if (loginContent) {
-        // Verifica se a tela está na interface de "Acesso Negado" e a restaura
-        if (loginContent.querySelector('#logout-restricted-btn')) {
-            loginContent.innerHTML = `
-                <h1 class="text-3xl font-bold text-indigo-800 mb-2">🦷 Dentista IA</h1>
-                <p class="text-sm text-gray-600 mb-6" id="auth-message">Entre com suas credenciais ou registre-se.</p>
-                <form id="auth-form" class="space-y-4">
-                    <div>
-                        <label for="auth-email" class="sr-only">Email</label>
-                        <input type="email" id="auth-email" placeholder="Email" required class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500">
-                    </div>
-                    <div>
-                        <label for="auth-password" class="sr-only">Senha</label>
-                        <input type="password" id="auth-password" placeholder="Senha" required class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500">
-                    </div>
-                    <div id="loading-spinner-container" class="hidden">
-                        <div class="loader-spinner mt-4"></div>
-                    </div>
-                    <button type="submit" id="auth-submit-btn" class="w-full py-3 px-6 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg transition duration-200 shadow-md">
-                        Entrar
-                    </button>
-                </form>
-                <div class="mt-4 text-sm">
-                    <button id="toggle-auth-mode" class="text-indigo-600 hover:text-indigo-800 font-medium">
-                        Não tem conta? Cadastre-se
-                    </button>
-                </div>
-                <div id="auth-error-message" class="text-red-500 mt-3 text-sm font-semibold h-4"></div>
-            `;
-            // Re-adiciona listeners
-            document.getElementById('auth-form').addEventListener('submit', handleAuthSubmit);
-            document.getElementById('toggle-auth-mode').addEventListener('click', toggleAuthMode);
-        }
+    // Se for a primeira vez, tentamos o login anônimo para compatibilidade (remover para produção estrita)
+    if (isInitial && !auth.currentUser && !config.initialAuthToken) {
+        handleAnonymousLogin();
     }
 };
 
-// NOVO: Função para exibir tela de restrição
-const showRoleRestrictedUI = () => {
-    document.getElementById('login-screen').classList.remove('hidden');
-    document.getElementById('app-container').classList.add('hidden');
-    
-    const loginContent = document.getElementById('login-screen').querySelector('.bg-white');
-    if (loginContent) {
-        loginContent.innerHTML = `
-            <h1 class="text-3xl font-bold text-red-800 mb-2">Acesso Negado</h1>
-            <p class="text-lg text-gray-600 mb-6">Sua conta não tem permissão de administrador (Dentista) para acessar esta plataforma.</p>
-            <p class="text-sm text-gray-500 mb-6">UID: ${currentUser.uid.slice(0, 10)}...</p>
-            <button id="logout-restricted-btn" class="w-full py-3 px-6 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg transition duration-200 shadow-md">
-                Sair
-            </button>
-        `;
-        document.getElementById('logout-restricted-btn').addEventListener('click', () => auth.signOut());
+const handleAnonymousLogin = async () => {
+    // Tentativa de login anônimo para compatibilidade de testes (será removido na produção final)
+    try {
+        const loadingMsg = document.getElementById('auth-message');
+        if (loadingMsg) loadingMsg.textContent = "Conectando ao Firebase...";
+        
+        const userCredential = await auth.signInAnonymously();
+        
+        // Se o login anônimo funcionar, o listener em setupAuthStateListener cuidará do showUI()
+    } catch (error) {
+        // Se falhar (e.g., login anônimo desabilitado), força o modo Login por Email/Senha
+        console.warn("Falha no login anônimo, forçando login por email/senha:", error.code);
+        const loadingMsg = document.getElementById('auth-message');
+        if (loadingMsg) loadingMsg.textContent = "Entre com suas credenciais ou cadastre-se.";
+        // Não é necessário fazer mais nada, o onAuthStateChanged(null) cuidará da exibição da tela.
     }
 };
-
 
 const toggleAuthMode = () => {
     isLoginMode = !isLoginMode;
@@ -201,6 +147,7 @@ const toggleAuthMode = () => {
         submitBtn.textContent = 'Cadastrar';
         toggleBtn.textContent = 'Já tem conta? Fazer Login';
         message.textContent = 'Crie sua conta de administrador (Dentista).';
+        // Habilite o provedor Email/Senha no console do Firebase para que o registro funcione!
     }
     document.getElementById('auth-error-message').textContent = '';
 };
@@ -221,7 +168,7 @@ const handleAuthSubmit = async (e) => {
         if (isLoginMode) {
             // Tenta fazer Login
             await auth.signInWithEmailAndPassword(email, password);
-            // O listener fará o resto do trabalho de verificação de role.
+            showNotification(`Bem-vindo, ${email}!`, 'success');
         } else {
             // Tenta fazer Registro
             const userCredential = await auth.createUserWithEmailAndPassword(email, password);
@@ -243,8 +190,6 @@ const handleAuthSubmit = async (e) => {
             displayMessage = 'Este email já está cadastrado. Tente fazer Login.';
         } else if (error.code === 'auth/weak-password') {
             displayMessage = 'A senha deve ter pelo menos 6 caracteres.';
-        } else if (error.code === 'auth/operation-not-allowed') {
-            displayMessage = 'O login por Email/Senha não está habilitado no Firebase Console.';
         }
         errorEl.textContent = displayMessage;
     } finally {
@@ -340,7 +285,7 @@ const renderDashboard = (container) => {
                     <i class='bx bxs-brain text-xl mr-2'></i> Alimentar o BRAIN (Diretrizes da IA)
                 </h3>
                 <p class="text-gray-600 mb-4 text-sm">Defina as regras. Use: <code>Variável de Tratamento: [TIPO]</code> e <code>Meta: [META]</code>.</p>
-                <textarea id="brain-input" rows="5" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 shadow-inner resize-none" placeholder="Ex: 'Atuar como assistente de ortodontia. Focar em higiene e uso de elásticos. Variável de Tratamento: [TIPO]. Meta: [META].'"></textarea>
+                <textarea id="brain-input" rows="5" class="w-full p-3 border border-indigo-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 shadow-inner resize-none" placeholder="Ex: 'Atuar como assistente de ortodontia. Focar em higiene e uso de elásticos. Variável de Tratamento: [TIPO]. Meta: [META].'"></textarea>
                 <div class="flex justify-between items-center mt-4">
                     <button id="save-brain-btn" class="py-3 px-6 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg transition duration-200 shadow-md">
                         <i class='bx bxs-save text-xl mr-2'></i> Salvar Diretrizes
@@ -506,7 +451,7 @@ const openPatientFormModal = (patient = null) => {
             
             <div>
                 <label class="block text-sm font-medium text-gray-700 mb-1">Meta Principal do Tratamento</label>
-                <textarea id="patient-treatment-goal" rows="2" required class="w-full p-3 border border-gray-300 rounded-lg resize-none">${isEdit ? patient.treatmentGoal : ''}</textarea>
+                <textarea id="patient-treatment-goal" rows="2" placeholder="Ex: Fechar diastema central em 6 meses. Instrução essencial para a IA." required class="w-full p-3 border border-gray-300 rounded-lg resize-none">${isEdit ? patient.treatmentGoal : ''}</textarea>
             </div>
             
             <div class="flex justify-end space-x-3 pt-4">
@@ -650,7 +595,8 @@ const deletePatient = async (patientId, patientName) => {
         await patientRef.remove();
         
         // Simulação de exclusão em cascata do diário
-        await db.ref(getJournalCollectionPath(patientId)).remove();
+        const journalRef = db.ref(getJournalCollectionPath(patientId));
+        await journalRef.remove();
 
         showNotification(`Paciente ${patientName} excluído com sucesso!`, 'success');
     } catch (e) {
@@ -667,13 +613,6 @@ const openJournalModal = (patient) => {
             <p class="font-semibold mb-1">Tipo: <span class="text-indigo-600">${patient.treatmentType}</span> | Meta: ${patient.treatmentGoal}</p>
         </div>
         
-        <div id="service-history-container" class="mb-4">
-            <h4 class="text-lg font-bold text-indigo-700 mb-2">Histórico de Serviços & Custos</h4>
-            <div id="patient-service-history" class="bg-white p-3 rounded-lg border border-gray-200 max-h-40 overflow-y-auto">
-                <p class="italic text-gray-500">Carregando histórico...</p>
-            </div>
-        </div>
-
         <div id="journal-timeline" class="content-scroll flex flex-col-reverse overflow-y-auto h-96 p-3 bg-gray-50 rounded-lg border border-gray-200">
             <p class="text-center text-gray-500 italic">Carregando interações...</p>
         </div>
@@ -702,78 +641,9 @@ const openJournalModal = (patient) => {
         </div>
     `;
     
-    // NOVO: Carregar histórico de serviços
-    loadPatientServiceHistory(patient.id);
     setupJournalListeners(patient);
     openModal(`Diário: ${patient.name}`, 'max-w-4xl');
 };
-
-// NOVO: Função para carregar histórico de serviços no Diário
-const loadPatientServiceHistory = (patientId) => {
-    const historyContainer = document.getElementById('patient-service-history');
-    if (!historyContainer) return;
-    
-    // Filtra as contas a receber pelo patientId
-    const receivableRef = db.ref(getReceivablePath(currentUser.uid)).orderByChild('patientId').equalTo(patientId);
-
-    receivableRef.once('value', async (snapshot) => {
-        const servicesObject = snapshot.val();
-        let serviceHistoryHTML = '';
-
-        if (servicesObject) {
-            const servicesList = Object.keys(servicesObject).map(key => ({ id: key, ...servicesObject[key] }));
-            
-            for (const service of servicesList) {
-                // Carregar materiais consumidos para cada serviço
-                const materialsRef = db.ref(getReceivableMaterialsPath(service.id));
-                const materialsSnapshot = await materialsRef.once('value');
-                const materialsObject = materialsSnapshot.val();
-                let materialsHTML = '';
-                let serviceCost = 0; // Custo de materiais para este serviço
-
-                if (materialsObject) {
-                    const materialsList = Object.keys(materialsObject).map(key => materialsObject[key]);
-                    
-                    materialsHTML = materialsList.map(m => {
-                        // Usamos o cache de estoque em memória para obter o custo
-                        const stockItem = stockItems.find(i => i.id === m.materialId);
-                        const costPerUnit = stockItem ? stockItem.cost : 0;
-                        const totalItemCost = costPerUnit * m.quantityUsed;
-                        serviceCost += totalItemCost;
-                        
-                        return `<li class="ml-4 text-xs text-gray-600">
-                            - ${m.quantityUsed} ${m.unit} de ${m.name} (Custo: ${formatCurrency(totalItemCost)})
-                        </li>`;
-                    }).join('');
-                }
-                
-                const statusColor = service.status === 'Recebido' ? 'text-green-600' : (service.status === 'Atrasado' ? 'text-red-600' : 'text-yellow-600');
-                
-                serviceHistoryHTML += `
-                    <div class="mb-4 p-3 border rounded-lg shadow-sm ${service.status === 'Recebido' ? 'bg-green-50' : 'bg-gray-50'}">
-                        <div class="flex justify-between items-center">
-                            <span class="font-semibold text-sm text-gray-800">Serviço: ${service.description} (${formatCurrency(service.amount)})</span>
-                            <span class="text-xs ${statusColor} font-bold">${service.status}</span>
-                        </div>
-                        <p class="text-xs text-gray-500 mb-2">Vencimento: ${service.dueDate}</p>
-                        
-                        <h5 class="text-xs font-semibold mt-2 text-indigo-700">Materiais (Custo total: ${formatCurrency(serviceCost)}):</h5>
-                        <ul class="list-disc list-inside">
-                            ${materialsHTML || '<li class="ml-4 italic text-gray-500 text-xs">Nenhum material registrado.</li>'}
-                        </ul>
-                    </div>
-                `;
-            }
-        }
-        
-        historyContainer.innerHTML = serviceHistoryHTML || '<p class="text-center text-gray-500 italic">Nenhum serviço financeiro registrado para este paciente.</p>';
-        
-    }).catch(e => {
-        historyContainer.innerHTML = `<p class="text-red-500">Erro ao carregar histórico: ${e.message}</p>`;
-        console.error("Erro ao carregar histórico financeiro do paciente:", e);
-    });
-};
-
 
 const setupJournalListeners = (patient) => {
     const timeline = document.getElementById('journal-timeline');
@@ -1066,6 +936,8 @@ const renderFinancialTab = (tab, container) => {
 
 // --- Funções CRUD Estoque ---
 
+let stockItems = [];
+
 const loadStock = () => {
     if (!currentUser) return;
 
@@ -1236,6 +1108,10 @@ const deleteStockItem = async (itemId, itemName) => {
 };
 
 // --- Funções CRUD Contas a Receber (Receivable) ---
+let receivables = [];
+let receivableMaterialsCache = {}; // Cache para materiais usados por conta a receber
+
+// NOVO MODAL: Para gerenciar os materiais vinculados ao serviço
 const openMaterialConsumptionModal = (receivable) => {
     const modalTitle = `Materiais Utilizados: ${receivable.patientName}`;
     
@@ -1666,7 +1542,7 @@ const openItemsPurchaseModal = (expense) => {
     const itemsListHTML = itemsPurchased.length > 0 ? itemsPurchased.map(i => `
         <li class="flex justify-between items-center py-2 border-b">
             <span>${i.name}</span>
-            <span class="font-semibold">${i.quantityPurchased} ${i.unit} (Custo: ${formatCurrency(i.cost * i.quantityPurchased)})</span>
+            <span class="font-semibold">${i.quantityPurchased} ${i.unit} (Custo: ${formatCurrency(i.cost)})</span>
         </li>
     `).join('') : '<p class="italic text-gray-500">Nenhum item comprado registrado. Adicione um abaixo.</p>';
     
@@ -2116,5 +1992,3 @@ document.addEventListener('DOMContentLoaded', () => {
         // Exemplo: if (e.target.closest('#some-button')) { ... }
     });
 });
-
-})(); // FIM DO ENCAPSULAMENTO IIFE
