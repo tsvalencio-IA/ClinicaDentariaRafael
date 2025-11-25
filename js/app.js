@@ -18,7 +18,7 @@ let currentView = 'dashboard';
 const getAdminCollectionPath = (uid, collectionName) => `artifacts/${appId}/users/${uid}/${collectionName}`;
 const getJournalCollectionPath = (patientId) => `artifacts/${appId}/patients/${patientId}/journal`;
 const getStockCollectionPath = (uid) => `artifacts/${appId}/users/${uid}/stock`;
-
+const getFinancialsPath = (uid) => `artifacts/${appId}/users/${uid}/finance`; // NOVO CAMINHO RTDB
 
 // Funções de Formatação (para UI)
 const formatFileName = (name) => {
@@ -199,7 +199,7 @@ const renderDashboard = (container) => {
     // Adicionar Lógica para o BRAIN (RTDB ADAPTADO)
     loadBrainConfig();
     document.getElementById('save-brain-btn').addEventListener('click', saveBrainConfig);
-    loadDashboardKPIs(); // Nova função para carregar contagens
+    loadDashboardKPIs(); 
 };
 
 const loadDashboardKPIs = () => {
@@ -682,13 +682,45 @@ const renderFinancialManager = (container) => {
                 <i class='bx bxs-wallet text-3xl mr-3 text-indigo-600'></i> Gestão Financeira e Estoque
             </h2>
             
-            <div class="flex justify-between items-center mb-6 border-b pb-4">
-                <h3 class="text-2xl font-semibold text-gray-700">Inventário de Materiais</h3>
+            <div class="flex border-b border-gray-200 mb-6">
+                <button data-tab="stock" class="p-3 text-sm font-medium border-b-2 border-indigo-600 text-indigo-700">Inventário de Materiais</button>
+                <button data-tab="finance" class="p-3 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700">Despesas & Receitas</button>
+            </div>
+
+            <div id="financial-tab-content">
+                </div>
+        </div>
+    `;
+
+    const tabContentContainer = document.getElementById('financial-tab-content');
+    
+    // Configura listeners para troca de abas
+    document.querySelectorAll('[data-tab]').forEach(tabBtn => {
+        tabBtn.addEventListener('click', () => {
+            document.querySelectorAll('[data-tab]').forEach(btn => {
+                btn.classList.remove('border-indigo-600', 'text-indigo-700');
+                btn.classList.add('border-transparent', 'text-gray-500', 'hover:border-gray-300', 'hover:text-gray-700');
+            });
+            tabBtn.classList.add('border-indigo-600', 'text-indigo-700');
+            tabBtn.classList.remove('border-transparent', 'text-gray-500', 'hover:border-gray-300', 'hover:text-gray-700');
+
+            renderFinancialTab(tabBtn.dataset.tab, tabContentContainer);
+        });
+    });
+
+    // Renderiza a aba de estoque por padrão
+    renderFinancialTab('stock', tabContentContainer);
+};
+
+// Nova função para gerenciar a renderização interna da aba Financeiro
+const renderFinancialTab = (tab, container) => {
+    if (tab === 'stock') {
+        container.innerHTML = `
+            <div class="flex justify-end mb-6">
                 <button id="add-stock-btn" class="py-2 px-4 bg-green-600 hover:bg-green-700 text-white font-bold rounded-lg transition duration-200 shadow-md flex items-center justify-center">
                     <i class='bx bx-plus-circle text-xl mr-2'></i> Novo Item
                 </button>
             </div>
-
             <div class="overflow-x-auto bg-gray-50 rounded-xl shadow-inner border border-gray-200">
                 <table class="min-w-full divide-y divide-gray-200">
                     <thead class="bg-gray-200">
@@ -705,16 +737,52 @@ const renderFinancialManager = (container) => {
                     </tbody>
                 </table>
             </div>
-        </div>
-    `;
-    document.getElementById('add-stock-btn').addEventListener('click', () => openStockFormModal());
-    loadStock();
+        `;
+        document.getElementById('add-stock-btn').addEventListener('click', () => openStockFormModal());
+        loadStock();
+
+    } else if (tab === 'finance') {
+        container.innerHTML = `
+            <div class="flex justify-between items-center mb-6">
+                <h3 class="text-xl font-semibold text-gray-700">Extrato de Transações</h3>
+                <button id="add-transaction-btn" class="py-2 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg transition duration-200 shadow-md flex items-center justify-center">
+                    <i class='bx bx-plus-circle text-xl mr-2'></i> Nova Transação
+                </button>
+            </div>
+
+            <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+                <div class="p-4 bg-green-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Total Receitas</p><p class="text-2xl font-bold text-green-800" id="total-revenue">${formatCurrency(0)}</p></div>
+                <div class="p-4 bg-red-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Total Despesas</p><p class="text-2xl font-bold text-red-800" id="total-expense">${formatCurrency(0)}</p></div>
+                <div class="p-4 bg-indigo-100 rounded-lg shadow-md col-span-2"><p class="text-sm text-gray-600">Lucro Líquido</p><p class="text-2xl font-bold text-indigo-800" id="net-profit">${formatCurrency(0)}</p></div>
+            </div>
+
+            <div class="overflow-x-auto bg-gray-50 rounded-xl shadow-inner border border-gray-200">
+                <table class="min-w-full divide-y divide-gray-200">
+                    <thead class="bg-gray-200">
+                        <tr>
+                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Data</th>
+                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Tipo</th>
+                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Descrição/Paciente</th>
+                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Valor</th>
+                            <th class="px-6 py-3 text-right text-xs font-bold text-gray-600 uppercase">Ações</th>
+                        </tr>
+                    </thead>
+                    <tbody id="transactions-table-body" class="bg-white divide-y divide-gray-200">
+                        <tr><td colspan="5" class="px-6 py-4 text-center text-gray-500 italic">Carregando transações...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        `;
+        document.getElementById('add-transaction-btn').addEventListener('click', () => openTransactionFormModal());
+        loadTransactions();
+    }
 };
+
+// --- Funções CRUD Estoque ---
 
 let stockItems = [];
 
 const loadStock = () => {
-    // RTDB CRUD: Load (Read)
     const stockRef = db.ref(getStockCollectionPath(currentUser.uid));
     
     stockRef.on('value', snapshot => {
@@ -881,6 +949,189 @@ const deleteStockItem = async (itemId, itemName) => {
     }
 };
 
+// --- Funções CRUD Transações Financeiras (NOVAS) ---
+let financialTransactions = [];
+
+const openTransactionFormModal = (transaction = null) => {
+    const isEdit = !!transaction;
+    const modalTitle = isEdit ? `Editar Transação` : 'Nova Transação (Receita/Despesa)';
+
+    document.getElementById('modal-title').textContent = modalTitle;
+    document.getElementById('modal-body').innerHTML = `
+        <form id="transaction-form" class="space-y-4">
+            <input type="hidden" id="transaction-id" value="${isEdit ? transaction.id : ''}">
+            
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Tipo</label>
+                    <select id="transaction-type" required class="w-full p-3 border border-gray-300 rounded-lg">
+                        <option value="Receita">Receita (Ex: Pagamento de Paciente)</option>
+                        <option value="Despesa">Despesa (Ex: Aluguel, Salário)</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Valor (R$)</label>
+                    <input type="number" step="0.01" id="transaction-amount" value="${isEdit ? transaction.amount : ''}" required class="w-full p-3 border border-gray-300 rounded-lg">
+                </div>
+            </div>
+            
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Descrição / Referência (Ex: Paciente João Silva, Aluguel do Mês)</label>
+                <input type="text" id="transaction-description" value="${isEdit ? transaction.description : ''}" required class="w-full p-3 border border-gray-300 rounded-lg">
+            </div>
+
+             <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Data da Transação</label>
+                <input type="date" id="transaction-date" value="${isEdit ? transaction.date : new Date().toISOString().substring(0, 10)}" required class="w-full p-3 border border-gray-300 rounded-lg">
+            </div>
+            
+            <div class="flex justify-end space-x-3 pt-4">
+                <button type="button" id="form-cancel-btn" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg">Cancelar</button>
+                <button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700">${isEdit ? 'Atualizar' : 'Registrar'}</button>
+            </div>
+        </form>
+    `;
+    
+    if (isEdit) {
+        document.getElementById('transaction-type').value = transaction.type;
+    }
+
+    document.getElementById('transaction-form').addEventListener('submit', saveTransaction);
+    document.getElementById('form-cancel-btn').addEventListener('click', closeModal);
+    
+    openModal(modalTitle, 'max-w-xl');
+};
+
+const saveTransaction = async (e) => {
+    e.preventDefault();
+    const isEdit = !!document.getElementById('transaction-id').value;
+    const transactionId = document.getElementById('transaction-id').value;
+
+    const transactionData = {
+        id: transactionId || null,
+        type: document.getElementById('transaction-type').value,
+        amount: parseFloat(document.getElementById('transaction-amount').value),
+        description: document.getElementById('transaction-description').value,
+        date: document.getElementById('transaction-date').value, // Formato YYYY-MM-DD
+        registeredAt: new Date().toISOString()
+    };
+
+    try {
+        const financialsRef = db.ref(getFinancialsPath(currentUser.uid));
+
+        if (isEdit) {
+            await financialsRef.child(transactionId).update(transactionData);
+        } else {
+            const newRef = financialsRef.push();
+            transactionData.id = newRef.key;
+            await newRef.set(transactionData);
+        }
+
+        closeModal();
+        showNotification(`Transação (${transactionData.type}) registrada com sucesso!`, 'success');
+    } catch (e) {
+        showNotification(`Erro ao registrar transação (RTDB): ${e.message}`, 'error');
+        console.error("Erro ao salvar transação (RTDB):", e);
+    }
+};
+
+const loadTransactions = () => {
+    const financialsRef = db.ref(getFinancialsPath(currentUser.uid));
+
+    financialsRef.on('value', snapshot => {
+        const transactionsObject = snapshot.val();
+        let transactionsList = [];
+        let totalRevenue = 0;
+        let totalExpense = 0;
+
+        if (transactionsObject) {
+            Object.keys(transactionsObject).forEach(key => {
+                const transaction = { id: key, ...transactionsObject[key] };
+                transactionsList.push(transaction);
+
+                if (transaction.type === 'Receita') {
+                    totalRevenue += transaction.amount;
+                } else if (transaction.type === 'Despesa') {
+                    totalExpense += transaction.amount;
+                }
+            });
+        }
+        
+        financialTransactions = transactionsList;
+        renderTransactionsTable(transactionsList, totalRevenue, totalExpense);
+    }, e => showNotification(`Erro ao carregar transações (RTDB): ${e.message}`, 'error'));
+};
+
+const renderTransactionsTable = (transactions, totalRevenue, totalExpense) => {
+    const tbody = document.getElementById('transactions-table-body');
+    if (!tbody) return;
+
+    // Atualiza KPIs
+    document.getElementById('total-revenue').textContent = formatCurrency(totalRevenue);
+    document.getElementById('total-expense').textContent = formatCurrency(totalExpense);
+    document.getElementById('net-profit').textContent = formatCurrency(totalRevenue - totalExpense);
+
+    // Renderiza a tabela
+    if (transactions.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="5" class="px-6 py-4 text-center text-gray-500 italic">Nenhuma transação registrada.</td></tr>`;
+        return;
+    }
+    
+    // Ordena por data (mais recente primeiro)
+    transactions.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+    tbody.innerHTML = transactions.map(t => {
+        const isRevenue = t.type === 'Receita';
+        const amountClass = isRevenue ? 'text-green-600 font-bold' : 'text-red-600 font-bold';
+        
+        return `
+            <tr class="hover:bg-gray-50 transition-colors">
+                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${t.date}</td>
+                <td class="px-6 py-4 whitespace-nowrap text-xs font-semibold ${isRevenue ? 'text-green-700' : 'text-red-700'}">${t.type}</td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">${t.description}</td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm ${amountClass}">${formatCurrency(t.amount)}</td>
+                <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                    <div class="flex justify-end space-x-2">
+                        <button data-action="edit-finance" data-id="${t.id}" class="p-2 text-indigo-600 hover:bg-indigo-100 rounded-full" title="Editar">
+                            <i class='bx bxs-edit-alt text-xl'></i>
+                        </button>
+                        <button data-action="delete-finance" data-id="${t.id}" class="p-2 text-red-600 hover:bg-red-100 rounded-full" title="Excluir">
+                            <i class='bx bxs-trash-alt text-xl'></i>
+                        </button>
+                    </div>
+                </td>
+            </tr>
+        `;
+    }).join('');
+
+    // Adiciona listener de ações à tabela de finanças
+    tbody.addEventListener('click', (e) => {
+        const btn = e.target.closest('button');
+        if (!btn) return;
+        const transactionId = btn.dataset.id;
+        const transaction = transactions.find(t => t.id === transactionId);
+
+        switch (btn.dataset.action) {
+            case 'edit-finance': openTransactionFormModal(transaction); break;
+            case 'delete-finance': deleteTransaction(transactionId, transaction.description); break;
+        }
+    });
+};
+
+const deleteTransaction = async (transactionId, description) => {
+    if (!confirm(`Tem certeza que deseja excluir a transação: "${description}"?`)) return;
+
+    try {
+        const transactionRef = db.ref(getFinancialsPath(currentUser.uid) + '/' + transactionId);
+        await transactionRef.remove();
+        
+        showNotification(`Transação excluída com sucesso!`, 'success');
+    } catch (e) {
+        showNotification(`Erro ao excluir transação (RTDB): ${e.message}`, 'error');
+        console.error("Erro ao excluir transação (RTDB):", e);
+    }
+};
+
 // --- Funções de Modal ---
 const openModal = (title, maxWidth = 'max-w-xl') => {
     const modal = document.getElementById('app-modal');
@@ -901,7 +1152,8 @@ const closeModal = () => {
         loadPatients();
     }
     if (currentView === 'financials') {
-        loadStock();
+        // Forçamos a recarga do conteúdo completo do financial manager para garantir o estado
+        renderContent(); 
     }
     // Recarregar KPIs no Dashboard
     if (document.getElementById('dashboard-patients-count')) {
