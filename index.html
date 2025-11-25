@@ -14,11 +14,36 @@
 <body class="bg-gray-100 font-sans antialiased">
 
     <div id="login-screen" class="flex items-center justify-center min-h-screen p-4">
-        <div class="bg-white p-8 rounded-xl shadow-2xl w-full max-w-sm text-center border-t-4 border-indigo-600">
-            <h1 class="text-3xl font-bold text-indigo-800 mb-2">Dentista IA</h1>
-            <p class="text-lg text-gray-600 mb-6">Carregando Sistema...</p>
-            <div id="loading-message" class="text-indigo-600 font-medium">Conectando ao Firebase...</div>
-            <div class="loader-spinner mt-4"></div>
+        <div class="bg-white p-8 rounded-xl shadow-2xl w-full max-w-md text-center border-t-4 border-indigo-600">
+            <h1 class="text-3xl font-bold text-indigo-800 mb-2">🦷 Dentista IA</h1>
+            <p class="text-sm text-gray-600 mb-6" id="auth-message">Entre com suas credenciais ou registre-se.</p>
+            
+            <form id="auth-form" class="space-y-4">
+                <div>
+                    <label for="auth-email" class="sr-only">Email</label>
+                    <input type="email" id="auth-email" placeholder="Email" required class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500">
+                </div>
+                <div>
+                    <label for="auth-password" class="sr-only">Senha</label>
+                    <input type="password" id="auth-password" placeholder="Senha" required class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500">
+                </div>
+                
+                <div id="loading-spinner-container" class="hidden">
+                    <div class="loader-spinner mt-4"></div>
+                </div>
+
+                <button type="submit" id="auth-submit-btn" class="w-full py-3 px-6 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg transition duration-200 shadow-md">
+                    Entrar
+                </button>
+            </form>
+
+            <div class="mt-4 text-sm">
+                <button id="toggle-auth-mode" class="text-indigo-600 hover:text-indigo-800 font-medium">
+                    Não tem conta? Cadastre-se
+                </button>
+            </div>
+            
+            <div id="auth-error-message" class="text-red-500 mt-3 text-sm font-semibold h-4"></div>
         </div>
     </div>
 
@@ -53,7 +78,9 @@
 
     <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
     <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-auth.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script> <script src="js/config.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script> 
+    
+    <script src="js/config.js"></script>
     <script src="js/ai.js"></script>
     <script src="js/cloudinary.js"></script>
     <script src="js/app.js"></script>
