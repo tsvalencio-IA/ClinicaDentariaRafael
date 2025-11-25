@@ -4,7 +4,7 @@
 // =====================================================================
 
 (function() {
-    // 1. Desestrutura dentro do escopo local da IIFE
+    // Desestrutura dentro do escopo local da IIFE
     const { GEMINI_MODEL, API_KEY } = window.AppConfig;
 
     /**
@@ -14,7 +14,7 @@
      * @returns {Promise<string>} O texto da resposta gerada pelo modelo.
      */
     const callGeminiAPI = async (systemPrompt, userMessage) => {
-        // ... (resto do código callGeminiAPI)
+        
         if (!API_KEY || API_KEY === "SUA_CHAVE_AQUI_GEMINI_API_KEY") {
             console.error("ERRO GEMINI: A chave API não foi configurada em js/config.js.");
             return "Erro: Chave API da Gemini não configurada.";
@@ -62,6 +62,6 @@
         }
     };
 
-    // 2. Exporta APENAS a função para o escopo global
+    // Exporta APENAS a função para o escopo global
     window.callGeminiAPI = callGeminiAPI;
 })();
