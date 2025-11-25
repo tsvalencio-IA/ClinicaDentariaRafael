@@ -3,8 +3,9 @@
 // ==================================================================
 
 // Variáveis Globais (Definidas em config.js e Injetadas pelo ambiente)
-const { firebaseConfig, initialAuthToken, CLOUDINARY_CLOUD_NAME, CLOUDINARY_UPLOAD_PRESET, NAV_ITEMS, GEMINI_MODEL, API_KEY } = window.AppConfig; 
-const appId = 'dentista-inteligente-app'; // App ID Fixo
+// CORREÇÃO: Usamos um objeto 'config' e acessamos as propriedades diretamente para evitar o SyntaxError.
+const config = window.AppConfig;
+const appId = config.APP_ID; 
 
 let db, auth;
 let currentUser = null;
@@ -56,14 +57,16 @@ const formatCurrency = (value) => `R$ ${parseFloat(value || 0).toFixed(2).replac
 
 // --- Conexão Firebase ---
 const initializeFirebase = async () => {
-    if (Object.keys(firebaseConfig).length === 0) {
+    // USANDO config.firebaseConfig
+    if (Object.keys(config.firebaseConfig).length === 0) {
         showNotification("ERRO: Configuração do Firebase está vazia. Verifique a injeção do ambiente.", "error");
         return;
     }
     
     try {
         if (!firebase.apps.length) {
-            firebase.initializeApp(firebaseConfig);
+            // USANDO config.firebaseConfig
+            firebase.initializeApp(config.firebaseConfig);
         }
         
         // Usando Firestore (melhor para dados estruturados e segurança)
@@ -72,8 +75,9 @@ const initializeFirebase = async () => {
         
         // Tenta autenticar o usuário Dentista/Admin
         let user;
-        if (initialAuthToken) {
-             const userCredential = await auth.signInWithCustomToken(initialAuthToken);
+        // USANDO config.initialAuthToken
+        if (config.initialAuthToken) {
+             const userCredential = await auth.signInWithCustomToken(config.initialAuthToken);
              user = userCredential.user;
         } else {
              // Fallback para login anônimo se não houver token (para testes)
@@ -122,7 +126,8 @@ const highlightNavItem = (viewId) => {
 
 const renderSidebar = () => {
     const navMenu = document.getElementById('nav-menu');
-    navMenu.innerHTML = NAV_ITEMS.map(item => `
+    // USANDO config.NAV_ITEMS
+    navMenu.innerHTML = config.NAV_ITEMS.map(item => `
         <button data-view="${item.id}" class="flex items-center p-3 rounded-xl transition-all duration-200 w-full text-left text-indigo-200 hover:bg-indigo-700 hover:text-white">
             <i class='bx ${item.icon} text-xl mr-3'></i>
             <span class="font-semibold">${item.label}</span>
