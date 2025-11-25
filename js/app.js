@@ -11,12 +11,12 @@ let db, auth;
 let currentUser = null;
 let currentView = 'dashboard';
 let isLoginMode = true; 
-let allPatients = []; // Variável global de pacientes
-let receivables = []; // Variável global de contas a receber
-let stockItems = []; // Variável global de estoque
-let receivableMaterialsCache = {}; // Cache para materiais usados por conta a receber
-let expenses = []; // Lista de despesas
-let expensePurchasedItemsCache = {}; // Cache para itens comprados por despesa
+let allPatients = []; 
+let receivables = []; 
+let stockItems = []; 
+let receivableMaterialsCache = {}; 
+let expenses = []; 
+let expensePurchasedItemsCache = {}; 
 
 
 // ==================================================================
