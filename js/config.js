@@ -16,16 +16,15 @@
     };
 
     // Token inicial (Null para exigir login manual)
-    const initialAuthToken = null; 
+    const initialAuthToken = null;
 
     // 2. CONFIGURAÇÃO CLOUDINARY (SEUS DADOS REAIS)
     const CLOUDINARY_CLOUD_NAME = "djtiaygrs";
     const CLOUDINARY_UPLOAD_PRESET = "dental";
 
     // 3. CONFIGURAÇÃO GOOGLE GEMINI API
-    // ATENÇÃO: Cole sua chave do Google AI Studio abaixo
     const GEMINI_MODEL = "gemini-2.5-flash-preview-09-2025";
-    const API_KEY = "SUA_CHAVE_AQUI_GEMINI_API_KEY"; 
+    const API_KEY = "SUA_CHAVE_AQUI_GEMINI_API_KEY";
 
     // 4. ID INTERNO DO APP
     const APP_ID = 'dentista-inteligente-app';
