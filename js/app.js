@@ -1456,2142 +1456,6 @@ const loadPatientServiceHistory = (patientId) => {
                 serviceHistoryHTML += `
                     <div class="mb-4 p-3 border rounded-lg shadow-sm ${service.status === 'Recebido' ? 'bg-green-50' : 'bg-gray-50'}">
                         <div class="flex justify-between items-center">
-                            <span class="font-semibold text-sm text-gray-800">Serviço: ${service.description} (${formatCurrency(service.amount)})</span>
-                            <span class="text-xs ${statusColor} font-bold">${service.status}</span>
-                        </div>
-                        <p class="text-xs text-gray-500 mb-2">Vencimento: ${service.dueDate}</p>
-                        
-                        <h5 class="text-xs font-semibold mt-2 text-indigo-700">Materiais (Custo total: ${formatCurrency(serviceCost)}):</h5>
-                        <ul class="list-disc list-inside">
-                            ${materialsHTML || '<li class="ml-4 italic text-gray-500 text-xs">Nenhum material registrado.</li>'}
-                        </ul>
-                    </div>
-                `;
-            }
-        }
-        
-        historyContainer.innerHTML = serviceHistoryHTML || '<p class="text-center text-gray-500 italic">Nenhum serviço financeiro registrado para este paciente.</p>';
-        
-    }).catch(e => {
-        historyContainer.innerHTML = `<p class="text-red-500">Erro ao carregar histórico: ${e.message}</p>`;
-        console.error("Erro ao carregar histórico financeiro do paciente:", e);
-    });
-};
-
-
-const setupJournalListeners = (patient) => {
-    const timeline = document.getElementById('journal-timeline');
-    const responseInput = document.getElementById('dentist-response-input');
-    const sendBtn = document.getElementById('send-response-btn');
-    const askAiBtn = document.getElementById('ask-ai-btn');
-    const mediaBtn = document.getElementById('attach-media-btn');
-    const mediaInput = document.getElementById('media-input');
-    const fileNameDisplay = document.getElementById('file-name-display');
-    
-    let currentFile = null;
-
-    mediaInput.addEventListener('change', (e) => {
-        currentFile = e.target.files[0] || null;
-        fileNameDisplay.textContent = currentFile ? formatFileName(currentFile.name) : '';
-    });
-    mediaBtn.addEventListener('click', () => mediaInput.click());
-
-    sendBtn.addEventListener('click', () => {
-        sendJournalEntry(patient, responseInput.value, 'Dentista', currentFile);
-        responseInput.value = '';
-        currentFile = null;
-        fileNameDisplay.textContent = '';
-    });
-    
-    askAiBtn.addEventListener('click', () => handleAIRequest(patient));
-
-    // RTDB ADAPTADO: Listener para o Diário
-    const journalRef = db.ref(getJournalCollectionPath(patient.id));
-    journalRef.orderByChild('timestamp').on('value', snapshot => {
-        const entriesObject = snapshot.val();
-        const entries = [];
-        if (entriesObject) {
-            Object.keys(entriesObject).forEach(key => {
-                 // RTDB não tem um objeto Date, então usamos o new Date(ISO String)
-                entries.push({ id: key, ...entriesObject[key], timestamp: new Date(entriesObject[key].timestamp) });
-            });
-        }
-        // O RTDB ordena do mais antigo para o mais novo, precisamos inverter para mostrar o mais recente em cima.
-        entries.reverse();
-        renderJournalEntries(timeline, entries);
-    }, e => showNotification(`Erro ao carregar diário (RTDB): ${e.message}`, 'error'));
-};
-
-const sendJournalEntry = async (patient, text, author, file) => {
-    if (!text.trim() && !file) return;
-
-    let mediaData = null;
-    let uploadPromise = Promise.resolve(null);
-    
-    if (file) {
-        uploadPromise = window.uploadToCloudinary(file).then(res => {
-            showNotification(`Arquivo ${file.name} enviado para Cloudinary!`, 'success');
-            return res;
-        }).catch(error => {
-            showNotification(`Falha ao carregar arquivo: ${error.message}`, 'error');
-            return null;
-        });
-    }
-
-    mediaData = await uploadPromise;
-
-    if (!text.trim() && !mediaData) return;
-    
-    const entryData = {
-        text: text.trim(),
-        author: author,
-        isAI: author.includes('IA'),
-        timestamp: new Date().toISOString(), // Usamos ISO String para o RTDB
-        media: mediaData
-    };
-
-    try {
-        // RTDB ADAPTADO: Usando .push() para criar um novo nó de entrada
-        await db.ref(getJournalCollectionPath(patient.id)).push(entryData);
-    } catch (e) {
-        showNotification(`Erro ao enviar entrada (RTDB): ${e.message}`, 'error');
-    }
-};
-
-const handleAIRequest = async (patient) => {
-    const askAiBtn = document.getElementById('ask-ai-btn');
-    askAiBtn.disabled = true;
-    askAiBtn.innerHTML = "<i class='bx bx-loader-alt bx-spin text-xl mr-2'></i> IA Pensando...";
-    
-    try {
-        // 1. Obter as diretrizes do BRAIN (RTDB ADAPTADO)
-        const brainRef = db.ref(getAdminCollectionPath(currentUser.uid, 'aiConfig') + '/directives');
-        const brainSnap = await brainRef.once('value');
-        const directives = brainSnap.exists() ? brainSnap.val().promptDirectives : 'Atuar como assistente padrão de clínica odontológica.';
-        
-        // 2. Personalizar o Prompt de Sistema
-        const systemPrompt = directives
-            .replace(/Variável de Tratamento: \[TIPO\]/, `Variável de Tratamento: ${patient.treatmentType || 'Geral'}`)
-            .replace(/Meta: \[META\]/, `Meta: ${patient.treatmentGoal || 'N/A'}`);
-        
-        // 3. Montar a Mensagem do Usuário (Contexto)
-        const userMessage = `Você é o assistente do Dr(a). ${currentUser.email}. O paciente ${patient.name} com tratamento "${patient.treatmentType}" e meta "${patient.treatmentGoal}" acaba de solicitar uma orientação/status. Responda-o com base nas diretrizes. Use um tom encorajador e profissional.`;
-
-        // 4. CHAMA A FUNÇÃO REAL DA API
-        const geminiResponseText = await window.callGeminiAPI(systemPrompt, userMessage);
-        
-        // 5. Enviar a resposta da IA para o Diário
-        sendJournalEntry(patient, geminiResponseText, 'Assistente IA', null);
-
-    } catch (e) {
-        showNotification(`Erro na solicitação de IA: ${e.message}`, 'error');
-        console.error("Erro na solicitação de IA:", e);
-    } finally {
-        askAiBtn.disabled = false;
-        askAiBtn.innerHTML = "<i class='bx bxs-brain text-xl mr-2'></i> Pedir Ajuda à IA";
-    }
-};
-
-
-const renderJournalEntries = (container, entries) => {
-    container.innerHTML = entries.map(entry => {
-        const isDentist = entry.author === 'Dentista';
-        const isAI = entry.isAI;
-        const entryClass = isDentist ? 'entry-dentist' : (isAI ? 'entry-ai' : 'entry-patient');
-        
-        const mediaHtml = entry.media ? `
-            <div class="mt-2 p-1 bg-white rounded border border-gray-300 text-xs flex items-center justify-between">
-                <i class='bx bx-image text-base mr-1 text-indigo-600'></i>
-                <span>${formatFileName(entry.media.name)}</span>
-                <a href="${entry.media.url}" target="_blank" class="text-indigo-600 hover:underline ml-2">Ver</a>
-            </div>
-        ` : '';
-
-        return `
-            <div class="journal-entry ${entryClass}">
-                <div class="flex justify-between items-center mb-1">
-                    <span class="text-xs font-semibold ${isDentist ? 'text-indigo-700' : (isAI ? 'text-cyan-700' : 'text-gray-700')}">
-                        ${entry.author}
-                    </span>
-                    <span class="text-xs text-gray-500">
-                        ${entry.timestamp ? formatDateTime(entry.timestamp.toISOString()) : 'Carregando...'}
-                    </span>
-                </div>
-                <p class="text-gray-800 text-sm whitespace-pre-wrap">${entry.text}</p>
-                ${mediaHtml}
-            </div>
-        `;
-    }).join('');
-};
-
-
-// --- 3. GESTÃO FINANCEIRA (INCLUINDO ESTOQUE/MATERIAIS) ---
-const renderFinancialManager = (container) => {
-    container.innerHTML = `
-        <div class="p-8 bg-white shadow-2xl rounded-2xl border border-indigo-100">
-            <h2 class="text-3xl font-extrabold text-indigo-800 mb-8 flex items-center">
-                <i class='bx bxs-wallet text-3xl mr-3 text-indigo-600'></i> Gestão Financeira e Estoque
-            </h2>
-            
-            <div class="flex border-b border-gray-200 mb-6">
-                <button data-tab="stock" class="p-3 text-sm font-medium border-b-2 border-indigo-600 text-indigo-700">Inventário de Materiais</button>
-                <button data-tab="receivable" class="p-3 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700">Contas a Receber</button>
-                <button data-tab="expense" class="p-3 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700">Despesas</button>
-            </div>
-
-            <div id="financial-tab-content">
-                </div>
-        </div>
-    `;
-
-    const tabContentContainer = document.getElementById('financial-tab-content');
-    
-    // Configura listeners para troca de abas
-    document.querySelectorAll('[data-tab]').forEach(tabBtn => {
-        tabBtn.addEventListener('click', () => {
-            document.querySelectorAll('[data-tab]').forEach(btn => {
-                btn.classList.remove('border-indigo-600', 'text-indigo-700');
-                btn.classList.add('border-transparent', 'text-gray-500', 'hover:border-gray-300', 'hover:text-gray-700');
-            });
-            tabBtn.classList.add('border-indigo-600', 'text-indigo-700');
-            tabBtn.classList.remove('border-transparent', 'text-gray-500', 'hover:border-gray-300', 'hover:text-gray-700');
-
-            renderFinancialTab(tabBtn.dataset.tab, tabContentContainer);
-        });
-    });
-
-    // Renderiza a aba de estoque por padrão
-    renderFinancialTab('stock', tabContentContainer);
-};
-
-// Nova função para gerenciar a renderização interna da aba Financeiro
-const renderFinancialTab = (tab, container) => {
-    container.innerHTML = ''; // Limpa o container antes de carregar
-
-    if (tab === 'stock') {
-        container.innerHTML = `
-            <div class="flex justify-between items-center mb-6">
-                <h3 class="text-xl font-semibold text-gray-700">Inventário de Materiais</h3>
-                <button id="add-stock-btn" class="py-2 px-4 bg-green-600 hover:bg-green-700 text-white font-bold rounded-lg transition duration-200 shadow-md flex items-center justify-center">
-                    <i class='bx bx-plus-circle text-xl mr-2'></i> Novo Item
-                </button>
-            </div>
-            <div class="overflow-x-auto bg-gray-50 rounded-xl shadow-inner border border-gray-200">
-                <table class="min-w-full divide-y divide-gray-200">
-                    <thead class="bg-gray-200">
-                        <tr>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Material</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Qtde</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Custo Médio</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Fornecedor</th>
-                            <th class="px-6 py-3 text-right text-xs font-bold text-gray-600 uppercase">Ações</th>
-                        </tr>
-                    </thead>
-                    <tbody id="stock-table-body" class="bg-white divide-y divide-gray-200">
-                        <tr><td colspan="5" class="px-6 py-4 text-center text-gray-500 italic">Carregando estoque...</td></tr>
-                    </tbody>
-                </table>
-            </div>
-        `;
-        document.getElementById('add-stock-btn').addEventListener('click', () => openStockFormModal());
-        loadStock();
-
-    } else if (tab === 'receivable') {
-        container.innerHTML = `
-            <div class="flex justify-between items-center mb-6">
-                <h3 class="text-xl font-semibold text-gray-700">Contas a Receber</h3>
-                <button id="add-receivable-btn" class="py-2 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg transition duration-200 shadow-md flex items-center justify-center">
-                    <i class='bx bx-plus-circle text-xl mr-2'></i> Registrar Serviço
-                </button>
-            </div>
-
-            <div class="grid grid-cols-3 gap-4 mb-6">
-                <div class="p-4 bg-green-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Total a Receber</p><p class="text-2xl font-bold text-green-800" id="total-receivable">${formatCurrency(0)}</p></div>
-                <div class="p-4 bg-yellow-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Recebido no Mês</p><p class="text-2xl font-bold text-yellow-800" id="received-this-month">${formatCurrency(0)}</p></div>
-                <div class="p-4 bg-gray-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Contas Abertas</p><p class="text-2xl font-bold text-gray-800" id="open-receivable-count">0</p></div>
-            </div>
-
-            <div class="overflow-x-auto bg-gray-50 rounded-xl shadow-inner border border-gray-200">
-                <table class="min-w-full divide-y divide-gray-200">
-                    <thead class="bg-gray-200">
-                        <tr>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Paciente</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Vencimento</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Descrição</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Valor</th>
-                            <th class="px-6 py-3 text-right text-xs font-bold text-gray-600 uppercase">Status/Ações</th>
-                        </tr>
-                    </thead>
-                    <tbody id="receivable-table-body" class="bg-white divide-y divide-gray-200">
-                        <tr><td colspan="5" class="px-6 py-4 text-center text-gray-500 italic">Carregando contas a receber...</td></tr>
-                    </tbody>
-                </table>
-            </div>
-        `;
-        document.getElementById('add-receivable-btn').addEventListener('click', () => openReceivableFormModal());
-        loadReceivable();
-
-    } else if (tab === 'expense') {
-        container.innerHTML = `
-            <div class="flex justify-between items-center mb-6">
-                <h3 class="text-xl font-semibold text-gray-700">Registro de Despesas (Contas a Pagar)</h3>
-                <button id="add-expense-btn" class="py-2 px-4 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg transition duration-200 shadow-md flex items-center justify-center">
-                    <i class='bx bx-minus-circle text-xl mr-2'></i> Registrar Despesa
-                </button>
-            </div>
-
-            <div class="grid grid-cols-3 gap-4 mb-6">
-                <div class="p-4 bg-red-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Total Despesas Abertas</p><p class="text-2xl font-bold text-red-800" id="total-expense-open">${formatCurrency(0)}</p></div>
-                <div class="p-4 bg-green-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Próximo Vencimento</p><p class="text-2xl font-bold text-green-800" id="next-due-date">N/A</p></div>
-                <div class="p-4 bg-gray-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Total Pago no Mês</p><p class="text-2xl font-bold text-gray-800" id="paid-this-month">${formatCurrency(0)}</p></div>
-            </div>
-
-            <div class="overflow-x-auto bg-gray-50 rounded-xl shadow-inner border border-gray-200">
-                <table class="min-w-full divide-y divide-gray-200">
-                    <thead class="bg-gray-200">
-                        <tr>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Vencimento</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Fornecedor</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Nota/Ref</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Valor</th>
-                            <th class="px-6 py-3 text-right text-xs font-bold text-gray-600 uppercase">Status/Ações</th>
-                        </tr>
-                    </thead>
-                    <tbody id="expense-table-body" class="bg-white divide-y divide-gray-200">
-                        <tr><td colspan="5" class="px-6 py-4 text-center text-gray-500 italic">Carregando despesas...</td></tr>
-                    </tbody>
-                </table>
-            </div>
-        `;
-        document.getElementById('add-expense-btn').addEventListener('click', () => openExpenseFormModal());
-        loadExpenses();
-    }
-};
-
-// Nova função para gerenciar a renderização interna da aba Financeiro
-const loadPatientServiceHistory = (patientId) => {
-    const historyContainer = document.getElementById('patient-service-history');
-    if (!historyContainer) return;
-    
-    // Filtra as contas a receber pelo patientId
-    const receivableRef = db.ref(getReceivablePath(currentUser.uid)).orderByChild('patientId').equalTo(patientId);
-
-    receivableRef.once('value', async (snapshot) => {
-        const servicesObject = snapshot.val();
-        let serviceHistoryHTML = '';
-
-        if (servicesObject) {
-            const servicesList = Object.keys(servicesObject).map(key => ({ id: key, ...servicesObject[key] }));
-            
-            for (const service of servicesList) {
-                // Carregar materiais consumidos para cada serviço
-                const materialsRef = db.ref(getReceivableMaterialsPath(service.id));
-                const materialsSnapshot = await materialsRef.once('value');
-                const materialsObject = materialsSnapshot.val();
-                let materialsHTML = '';
-                let serviceCost = 0; // Custo de materiais para este serviço
-
-                if (materialsObject) {
-                    const materialsList = Object.keys(materialsObject).map(key => materialsObject[key]);
-                    
-                    materialsHTML = materialsList.map(m => {
-                        // Usamos o cache de estoque em memória para obter o custo
-                        const stockItem = stockItems.find(i => i.id === m.materialId);
-                        const costPerUnit = stockItem ? stockItem.cost : 0;
-                        const totalItemCost = costPerUnit * m.quantityUsed;
-                        serviceCost += totalItemCost;
-                        
-                        return `<li class="ml-4 text-xs text-gray-600">
-                            - ${m.quantityUsed} ${m.unit} de ${m.name} (Custo: ${formatCurrency(totalItemCost)})
-                        </li>`;
-                    }).join('');
-                }
-                
-                const statusColor = service.status === 'Recebido' ? 'text-green-600' : (service.status === 'Atrasado' ? 'text-red-600' : 'text-yellow-600');
-                
-                serviceHistoryHTML += `
-                    <div class="mb-4 p-3 border rounded-lg shadow-sm ${service.status === 'Recebido' ? 'bg-green-50' : 'bg-gray-50'}">
-                        <div class="flex justify-between items-center">
-                            <span class="font-semibold text-sm text-gray-800">Serviço: ${service.description} (${formatCurrency(service.amount)})</span>
-                            <span class="text-xs ${statusColor} font-bold">${service.status}</span>
-                        </div>
-                        <p class="text-xs text-gray-500 mb-2">Vencimento: ${service.dueDate}</p>
-                        
-                        <h5 class="text-xs font-semibold mt-2 text-indigo-700">Materiais (Custo total: ${formatCurrency(serviceCost)}):</h5>
-                        <ul class="list-disc list-inside">
-                            ${materialsHTML || '<li class="ml-4 italic text-gray-500 text-xs">Nenhum material registrado.</li>'}
-                        </ul>
-                    </div>
-                `;
-            }
-        }
-        
-        historyContainer.innerHTML = serviceHistoryHTML || '<p class="text-center text-gray-500 italic">Nenhum serviço financeiro registrado para este paciente.</p>';
-        
-    }).catch(e => {
-        historyContainer.innerHTML = `<p class="text-red-500">Erro ao carregar histórico: ${e.message}</p>`;
-        console.error("Erro ao carregar histórico financeiro do paciente:", e);
-    });
-};
-
-
-const setupJournalListeners = (patient) => {
-    const timeline = document.getElementById('journal-timeline');
-    const responseInput = document.getElementById('dentist-response-input');
-    const sendBtn = document.getElementById('send-response-btn');
-    const askAiBtn = document.getElementById('ask-ai-btn');
-    const mediaBtn = document.getElementById('attach-media-btn');
-    const mediaInput = document.getElementById('media-input');
-    const fileNameDisplay = document.getElementById('file-name-display');
-    
-    let currentFile = null;
-
-    mediaInput.addEventListener('change', (e) => {
-        currentFile = e.target.files[0] || null;
-        fileNameDisplay.textContent = currentFile ? formatFileName(currentFile.name) : '';
-    });
-    mediaBtn.addEventListener('click', () => mediaInput.click());
-
-    sendBtn.addEventListener('click', () => {
-        sendJournalEntry(patient, responseInput.value, 'Dentista', currentFile);
-        responseInput.value = '';
-        currentFile = null;
-        fileNameDisplay.textContent = '';
-    });
-    
-    askAiBtn.addEventListener('click', () => handleAIRequest(patient));
-
-    // RTDB ADAPTADO: Listener para o Diário
-    const journalRef = db.ref(getJournalCollectionPath(patient.id));
-    journalRef.orderByChild('timestamp').on('value', snapshot => {
-        const entriesObject = snapshot.val();
-        const entries = [];
-        if (entriesObject) {
-            Object.keys(entriesObject).forEach(key => {
-                 // RTDB não tem um objeto Date, então usamos o new Date(ISO String)
-                entries.push({ id: key, ...entriesObject[key], timestamp: new Date(entriesObject[key].timestamp) });
-            });
-        }
-        // O RTDB ordena do mais antigo para o mais novo, precisamos inverter para mostrar o mais recente em cima.
-        entries.reverse();
-        renderJournalEntries(timeline, entries);
-    }, e => showNotification(`Erro ao carregar diário (RTDB): ${e.message}`, 'error'));
-};
-
-const sendJournalEntry = async (patient, text, author, file) => {
-    if (!text.trim() && !file) return;
-
-    let mediaData = null;
-    let uploadPromise = Promise.resolve(null);
-    
-    if (file) {
-        uploadPromise = window.uploadToCloudinary(file).then(res => {
-            showNotification(`Arquivo ${file.name} enviado para Cloudinary!`, 'success');
-            return res;
-        }).catch(error => {
-            showNotification(`Falha ao carregar arquivo: ${error.message}`, 'error');
-            return null;
-        });
-    }
-
-    mediaData = await uploadPromise;
-
-    if (!text.trim() && !mediaData) return;
-    
-    const entryData = {
-        text: text.trim(),
-        author: author,
-        isAI: author.includes('IA'),
-        timestamp: new Date().toISOString(), // Usamos ISO String para o RTDB
-        media: mediaData
-    };
-
-    try {
-        // RTDB ADAPTADO: Usando .push() para criar um novo nó de entrada
-        await db.ref(getJournalCollectionPath(patient.id)).push(entryData);
-    } catch (e) {
-        showNotification(`Erro ao enviar entrada (RTDB): ${e.message}`, 'error');
-    }
-};
-
-const handleAIRequest = async (patient) => {
-    const askAiBtn = document.getElementById('ask-ai-btn');
-    askAiBtn.disabled = true;
-    askAiBtn.innerHTML = "<i class='bx bx-loader-alt bx-spin text-xl mr-2'></i> IA Pensando...";
-    
-    try {
-        // 1. Obter as diretrizes do BRAIN (RTDB ADAPTADO)
-        const brainRef = db.ref(getAdminCollectionPath(currentUser.uid, 'aiConfig') + '/directives');
-        const brainSnap = await brainRef.once('value');
-        const directives = brainSnap.exists() ? brainSnap.val().promptDirectives : 'Atuar como assistente padrão de clínica odontológica.';
-        
-        // 2. Personalizar o Prompt de Sistema
-        const systemPrompt = directives
-            .replace(/Variável de Tratamento: \[TIPO\]/, `Variável de Tratamento: ${patient.treatmentType || 'Geral'}`)
-            .replace(/Meta: \[META\]/, `Meta: ${patient.treatmentGoal || 'N/A'}`);
-        
-        // 3. Montar a Mensagem do Usuário (Contexto)
-        const userMessage = `Você é o assistente do Dr(a). ${currentUser.email}. O paciente ${patient.name} com tratamento "${patient.treatmentType}" e meta "${patient.treatmentGoal}" acaba de solicitar uma orientação/status. Responda-o com base nas diretrizes. Use um tom encorajador e profissional.`;
-
-        // 4. CHAMA A FUNÇÃO REAL DA API
-        const geminiResponseText = await window.callGeminiAPI(systemPrompt, userMessage);
-        
-        // 5. Enviar a resposta da IA para o Diário
-        sendJournalEntry(patient, geminiResponseText, 'Assistente IA', null);
-
-    } catch (e) {
-        showNotification(`Erro na solicitação de IA: ${e.message}`, 'error');
-        console.error("Erro na solicitação de IA:", e);
-    } finally {
-        askAiBtn.disabled = false;
-        askAiBtn.innerHTML = "<i class='bx bxs-brain text-xl mr-2'></i> Pedir Ajuda à IA";
-    }
-};
-
-
-const renderJournalEntries = (container, entries) => {
-    container.innerHTML = entries.map(entry => {
-        const isDentist = entry.author === 'Dentista';
-        const isAI = entry.isAI;
-        const entryClass = isDentist ? 'entry-dentist' : (isAI ? 'entry-ai' : 'entry-patient');
-        
-        const mediaHtml = entry.media ? `
-            <div class="mt-2 p-1 bg-white rounded border border-gray-300 text-xs flex items-center justify-between">
-                <i class='bx bx-image text-base mr-1 text-indigo-600'></i>
-                <span>${formatFileName(entry.media.name)}</span>
-                <a href="${entry.media.url}" target="_blank" class="text-indigo-600 hover:underline ml-2">Ver</a>
-            </div>
-        ` : '';
-
-        return `
-            <div class="journal-entry ${entryClass}">
-                <div class="flex justify-between items-center mb-1">
-                    <span class="text-xs font-semibold ${isDentist ? 'text-indigo-700' : (isAI ? 'text-cyan-700' : 'text-gray-700')}">
-                        ${entry.author}
-                    </span>
-                    <span class="text-xs text-gray-500">
-                        ${entry.timestamp ? formatDateTime(entry.timestamp.toISOString()) : 'Carregando...'}
-                    </span>
-                </div>
-                <p class="text-gray-800 text-sm whitespace-pre-wrap">${entry.text}</p>
-                ${mediaHtml}
-            </div>
-        `;
-    }).join('');
-};
-
-
-// --- 3. GESTÃO FINANCEIRA (INCLUINDO ESTOQUE/MATERIAIS) ---
-const renderFinancialManager = (container) => {
-    container.innerHTML = `
-        <div class="p-8 bg-white shadow-2xl rounded-2xl border border-indigo-100">
-            <h2 class="text-3xl font-extrabold text-indigo-800 mb-8 flex items-center">
-                <i class='bx bxs-wallet text-3xl mr-3 text-indigo-600'></i> Gestão Financeira e Estoque
-            </h2>
-            
-            <div class="flex border-b border-gray-200 mb-6">
-                <button data-tab="stock" class="p-3 text-sm font-medium border-b-2 border-indigo-600 text-indigo-700">Inventário de Materiais</button>
-                <button data-tab="receivable" class="p-3 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700">Contas a Receber</button>
-                <button data-tab="expense" class="p-3 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700">Despesas</button>
-            </div>
-
-            <div id="financial-tab-content">
-                </div>
-        </div>
-    `;
-
-    const tabContentContainer = document.getElementById('financial-tab-content');
-    
-    // Configura listeners para troca de abas
-    document.querySelectorAll('[data-tab]').forEach(tabBtn => {
-        tabBtn.addEventListener('click', () => {
-            document.querySelectorAll('[data-tab]').forEach(btn => {
-                btn.classList.remove('border-indigo-600', 'text-indigo-700');
-                btn.classList.add('border-transparent', 'text-gray-500', 'hover:border-gray-300', 'hover:text-gray-700');
-            });
-            tabBtn.classList.add('border-indigo-600', 'text-indigo-700');
-            tabBtn.classList.remove('border-transparent', 'text-gray-500', 'hover:border-gray-300', 'hover:text-gray-700');
-
-            renderFinancialTab(tabBtn.dataset.tab, tabContentContainer);
-        });
-    });
-
-    // Renderiza a aba de estoque por padrão
-    renderFinancialTab('stock', tabContentContainer);
-};
-
-// Nova função para gerenciar a renderização interna da aba Financeiro
-const renderFinancialTab = (tab, container) => {
-    container.innerHTML = ''; // Limpa o container antes de carregar
-
-    if (tab === 'stock') {
-        container.innerHTML = `
-            <div class="flex justify-between items-center mb-6">
-                <h3 class="text-xl font-semibold text-gray-700">Inventário de Materiais</h3>
-                <button id="add-stock-btn" class="py-2 px-4 bg-green-600 hover:bg-green-700 text-white font-bold rounded-lg transition duration-200 shadow-md flex items-center justify-center">
-                    <i class='bx bx-plus-circle text-xl mr-2'></i> Novo Item
-                </button>
-            </div>
-            <div class="overflow-x-auto bg-gray-50 rounded-xl shadow-inner border border-gray-200">
-                <table class="min-w-full divide-y divide-gray-200">
-                    <thead class="bg-gray-200">
-                        <tr>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Material</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Qtde</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Custo Médio</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Fornecedor</th>
-                            <th class="px-6 py-3 text-right text-xs font-bold text-gray-600 uppercase">Ações</th>
-                        </tr>
-                    </thead>
-                    <tbody id="stock-table-body" class="bg-white divide-y divide-gray-200">
-                        <tr><td colspan="5" class="px-6 py-4 text-center text-gray-500 italic">Carregando estoque...</td></tr>
-                    </tbody>
-                </table>
-            </div>
-        `;
-        document.getElementById('add-stock-btn').addEventListener('click', () => openStockFormModal());
-        loadStock();
-
-    } else if (tab === 'receivable') {
-        container.innerHTML = `
-            <div class="flex justify-between items-center mb-6">
-                <h3 class="text-xl font-semibold text-gray-700">Contas a Receber</h3>
-                <button id="add-receivable-btn" class="py-2 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg transition duration-200 shadow-md flex items-center justify-center">
-                    <i class='bx bx-plus-circle text-xl mr-2'></i> Registrar Serviço
-                </button>
-            </div>
-
-            <div class="grid grid-cols-3 gap-4 mb-6">
-                <div class="p-4 bg-green-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Total a Receber</p><p class="text-2xl font-bold text-green-800" id="total-receivable">${formatCurrency(0)}</p></div>
-                <div class="p-4 bg-yellow-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Recebido no Mês</p><p class="text-2xl font-bold text-yellow-800" id="received-this-month">${formatCurrency(0)}</p></div>
-                <div class="p-4 bg-gray-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Contas Abertas</p><p class="text-2xl font-bold text-gray-800" id="open-receivable-count">0</p></div>
-            </div>
-
-            <div class="overflow-x-auto bg-gray-50 rounded-xl shadow-inner border border-gray-200">
-                <table class="min-w-full divide-y divide-gray-200">
-                    <thead class="bg-gray-200">
-                        <tr>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Paciente</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Vencimento</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Descrição</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Valor</th>
-                            <th class="px-6 py-3 text-right text-xs font-bold text-gray-600 uppercase">Status/Ações</th>
-                        </tr>
-                    </thead>
-                    <tbody id="receivable-table-body" class="bg-white divide-y divide-gray-200">
-                        <tr><td colspan="5" class="px-6 py-4 text-center text-gray-500 italic">Carregando contas a receber...</td></tr>
-                    </tbody>
-                </table>
-            </div>
-        `;
-        document.getElementById('add-receivable-btn').addEventListener('click', () => openReceivableFormModal());
-        loadReceivable();
-
-    } else if (tab === 'expense') {
-        container.innerHTML = `
-            <div class="flex justify-between items-center mb-6">
-                <h3 class="text-xl font-semibold text-gray-700">Registro de Despesas (Contas a Pagar)</h3>
-                <button id="add-expense-btn" class="py-2 px-4 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg transition duration-200 shadow-md flex items-center justify-center">
-                    <i class='bx bx-minus-circle text-xl mr-2'></i> Registrar Despesa
-                </button>
-            </div>
-
-            <div class="grid grid-cols-3 gap-4 mb-6">
-                <div class="p-4 bg-red-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Total Despesas Abertas</p><p class="text-2xl font-bold text-red-800" id="total-expense-open">${formatCurrency(0)}</p></div>
-                <div class="p-4 bg-green-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Próximo Vencimento</p><p class="text-2xl font-bold text-green-800" id="next-due-date">N/A</p></div>
-                <div class="p-4 bg-gray-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Total Pago no Mês</p><p class="text-2xl font-bold text-gray-800" id="paid-this-month">${formatCurrency(0)}</p></div>
-            </div>
-
-            <div class="overflow-x-auto bg-gray-50 rounded-xl shadow-inner border border-gray-200">
-                <table class="min-w-full divide-y divide-gray-200">
-                    <thead class="bg-gray-200">
-                        <tr>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Vencimento</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Fornecedor</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Nota/Ref</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Valor</th>
-                            <th class="px-6 py-3 text-right text-xs font-bold text-gray-600 uppercase">Status/Ações</th>
-                        </tr>
-                    </thead>
-                    <tbody id="expense-table-body" class="bg-white divide-y divide-gray-200">
-                        <tr><td colspan="5" class="px-6 py-4 text-center text-gray-500 italic">Carregando despesas...</td></tr>
-                    </tbody>
-                </table>
-            </div>
-        `;
-        document.getElementById('add-expense-btn').addEventListener('click', () => openExpenseFormModal());
-        loadExpenses();
-    }
-};
-
-// Nova função para gerenciar a renderização interna da aba Financeiro
-const loadPatientServiceHistory = (patientId) => {
-    const historyContainer = document.getElementById('patient-service-history');
-    if (!historyContainer) return;
-    
-    // Filtra as contas a receber pelo patientId
-    const receivableRef = db.ref(getReceivablePath(currentUser.uid)).orderByChild('patientId').equalTo(patientId);
-
-    receivableRef.once('value', async (snapshot) => {
-        const servicesObject = snapshot.val();
-        let serviceHistoryHTML = '';
-
-        if (servicesObject) {
-            const servicesList = Object.keys(servicesObject).map(key => ({ id: key, ...servicesObject[key] }));
-            
-            for (const service of servicesList) {
-                // Carregar materiais consumidos para cada serviço
-                const materialsRef = db.ref(getReceivableMaterialsPath(service.id));
-                const materialsSnapshot = await materialsRef.once('value');
-                const materialsObject = materialsSnapshot.val();
-                let materialsHTML = '';
-                let serviceCost = 0; // Custo de materiais para este serviço
-
-                if (materialsObject) {
-                    const materialsList = Object.keys(materialsObject).map(key => materialsObject[key]);
-                    
-                    materialsHTML = materialsList.map(m => {
-                        // Usamos o cache de estoque em memória para obter o custo
-                        const stockItem = stockItems.find(i => i.id === m.materialId);
-                        const costPerUnit = stockItem ? stockItem.cost : 0;
-                        const totalItemCost = costPerUnit * m.quantityUsed;
-                        serviceCost += totalItemCost;
-                        
-                        return `<li class="ml-4 text-xs text-gray-600">
-                            - ${m.quantityUsed} ${m.unit} de ${m.name} (Custo: ${formatCurrency(totalItemCost)})
-                        </li>`;
-                    }).join('');
-                }
-                
-                const statusColor = service.status === 'Recebido' ? 'text-green-600' : (service.status === 'Atrasado' ? 'text-red-600' : 'text-yellow-600');
-                
-                serviceHistoryHTML += `
-                    <div class="mb-4 p-3 border rounded-lg shadow-sm ${service.status === 'Recebido' ? 'bg-green-50' : 'bg-gray-50'}">
-                        <div class="flex justify-between items-center">
-                            <span class="font-semibold text-sm text-gray-800">Serviço: ${service.description} (${formatCurrency(service.amount)})</span>
-                            <span class="text-xs ${statusColor} font-bold">${service.status}</span>
-                        </div>
-                        <p class="text-xs text-gray-500 mb-2">Vencimento: ${service.dueDate}</p>
-                        
-                        <h5 class="text-xs font-semibold mt-2 text-indigo-700">Materiais (Custo total: ${formatCurrency(serviceCost)}):</h5>
-                        <ul class="list-disc list-inside">
-                            ${materialsHTML || '<li class="ml-4 italic text-gray-500 text-xs">Nenhum material registrado.</li>'}
-                        </ul>
-                    </div>
-                `;
-            }
-        }
-        
-        historyContainer.innerHTML = serviceHistoryHTML || '<p class="text-center text-gray-500 italic">Nenhum serviço financeiro registrado para este paciente.</p>';
-        
-    }).catch(e => {
-        historyContainer.innerHTML = `<p class="text-red-500">Erro ao carregar histórico: ${e.message}</p>`;
-        console.error("Erro ao carregar histórico financeiro do paciente:", e);
-    });
-};
-
-
-const setupJournalListeners = (patient) => {
-    const timeline = document.getElementById('journal-timeline');
-    const responseInput = document.getElementById('dentist-response-input');
-    const sendBtn = document.getElementById('send-response-btn');
-    const askAiBtn = document.getElementById('ask-ai-btn');
-    const mediaBtn = document.getElementById('attach-media-btn');
-    const mediaInput = document.getElementById('media-input');
-    const fileNameDisplay = document.getElementById('file-name-display');
-    
-    let currentFile = null;
-
-    mediaInput.addEventListener('change', (e) => {
-        currentFile = e.target.files[0] || null;
-        fileNameDisplay.textContent = currentFile ? formatFileName(currentFile.name) : '';
-    });
-    mediaBtn.addEventListener('click', () => mediaInput.click());
-
-    sendBtn.addEventListener('click', () => {
-        sendJournalEntry(patient, responseInput.value, 'Dentista', currentFile);
-        responseInput.value = '';
-        currentFile = null;
-        fileNameDisplay.textContent = '';
-    });
-    
-    askAiBtn.addEventListener('click', () => handleAIRequest(patient));
-
-    // RTDB ADAPTADO: Listener para o Diário
-    const journalRef = db.ref(getJournalCollectionPath(patient.id));
-    journalRef.orderByChild('timestamp').on('value', snapshot => {
-        const entriesObject = snapshot.val();
-        const entries = [];
-        if (entriesObject) {
-            Object.keys(entriesObject).forEach(key => {
-                 // RTDB não tem um objeto Date, então usamos o new Date(ISO String)
-                entries.push({ id: key, ...entriesObject[key], timestamp: new Date(entriesObject[key].timestamp) });
-            });
-        }
-        // O RTDB ordena do mais antigo para o mais novo, precisamos inverter para mostrar o mais recente em cima.
-        entries.reverse();
-        renderJournalEntries(timeline, entries);
-    }, e => showNotification(`Erro ao carregar diário (RTDB): ${e.message}`, 'error'));
-};
-
-const sendJournalEntry = async (patient, text, author, file) => {
-    if (!text.trim() && !file) return;
-
-    let mediaData = null;
-    let uploadPromise = Promise.resolve(null);
-    
-    if (file) {
-        uploadPromise = window.uploadToCloudinary(file).then(res => {
-            showNotification(`Arquivo ${file.name} enviado para Cloudinary!`, 'success');
-            return res;
-        }).catch(error => {
-            showNotification(`Falha ao carregar arquivo: ${error.message}`, 'error');
-            return null;
-        });
-    }
-
-    mediaData = await uploadPromise;
-
-    if (!text.trim() && !mediaData) return;
-    
-    const entryData = {
-        text: text.trim(),
-        author: author,
-        isAI: author.includes('IA'),
-        timestamp: new Date().toISOString(), // Usamos ISO String para o RTDB
-        media: mediaData
-    };
-
-    try {
-        // RTDB ADAPTADO: Usando .push() para criar um novo nó de entrada
-        await db.ref(getJournalCollectionPath(patient.id)).push(entryData);
-    } catch (e) {
-        showNotification(`Erro ao enviar entrada (RTDB): ${e.message}`, 'error');
-    }
-};
-
-const handleAIRequest = async (patient) => {
-    const askAiBtn = document.getElementById('ask-ai-btn');
-    askAiBtn.disabled = true;
-    askAiBtn.innerHTML = "<i class='bx bx-loader-alt bx-spin text-xl mr-2'></i> IA Pensando...";
-    
-    try {
-        // 1. Obter as diretrizes do BRAIN (RTDB ADAPTADO)
-        const brainRef = db.ref(getAdminCollectionPath(currentUser.uid, 'aiConfig') + '/directives');
-        const brainSnap = await brainRef.once('value');
-        const directives = brainSnap.exists() ? brainSnap.val().promptDirectives : 'Atuar como assistente padrão de clínica odontológica.';
-        
-        // 2. Personalizar o Prompt de Sistema
-        const systemPrompt = directives
-            .replace(/Variável de Tratamento: \[TIPO\]/, `Variável de Tratamento: ${patient.treatmentType || 'Geral'}`)
-            .replace(/Meta: \[META\]/, `Meta: ${patient.treatmentGoal || 'N/A'}`);
-        
-        // 3. Montar a Mensagem do Usuário (Contexto)
-        const userMessage = `Você é o assistente do Dr(a). ${currentUser.email}. O paciente ${patient.name} com tratamento "${patient.treatmentType}" e meta "${patient.treatmentGoal}" acaba de solicitar uma orientação/status. Responda-o com base nas diretrizes. Use um tom encorajador e profissional.`;
-
-        // 4. CHAMA A FUNÇÃO REAL DA API
-        const geminiResponseText = await window.callGeminiAPI(systemPrompt, userMessage);
-        
-        // 5. Enviar a resposta da IA para o Diário
-        sendJournalEntry(patient, geminiResponseText, 'Assistente IA', null);
-
-    } catch (e) {
-        showNotification(`Erro na solicitação de IA: ${e.message}`, 'error');
-        console.error("Erro na solicitação de IA:", e);
-    } finally {
-        askAiBtn.disabled = false;
-        askAiBtn.innerHTML = "<i class='bx bxs-brain text-xl mr-2'></i> Pedir Ajuda à IA";
-    }
-};
-
-
-const renderJournalEntries = (container, entries) => {
-    container.innerHTML = entries.map(entry => {
-        const isDentist = entry.author === 'Dentista';
-        const isAI = entry.isAI;
-        const entryClass = isDentist ? 'entry-dentist' : (isAI ? 'entry-ai' : 'entry-patient');
-        
-        const mediaHtml = entry.media ? `
-            <div class="mt-2 p-1 bg-white rounded border border-gray-300 text-xs flex items-center justify-between">
-                <i class='bx bx-image text-base mr-1 text-indigo-600'></i>
-                <span>${formatFileName(entry.media.name)}</span>
-                <a href="${entry.media.url}" target="_blank" class="text-indigo-600 hover:underline ml-2">Ver</a>
-            </div>
-        ` : '';
-
-        return `
-            <div class="journal-entry ${entryClass}">
-                <div class="flex justify-between items-center mb-1">
-                    <span class="text-xs font-semibold ${isDentist ? 'text-indigo-700' : (isAI ? 'text-cyan-700' : 'text-gray-700')}">
-                        ${entry.author}
-                    </span>
-                    <span class="text-xs text-gray-500">
-                        ${entry.timestamp ? formatDateTime(entry.timestamp.toISOString()) : 'Carregando...'}
-                    </span>
-                </div>
-                <p class="text-gray-800 text-sm whitespace-pre-wrap">${entry.text}</p>
-                ${mediaHtml}
-            </div>
-        `;
-    }).join('');
-};
-
-
-// --- 3. GESTÃO FINANCEIRA (INCLUINDO ESTOQUE/MATERIAIS) ---
-const renderFinancialManager = (container) => {
-    container.innerHTML = `
-        <div class="p-8 bg-white shadow-2xl rounded-2xl border border-indigo-100">
-            <h2 class="text-3xl font-extrabold text-indigo-800 mb-8 flex items-center">
-                <i class='bx bxs-wallet text-3xl mr-3 text-indigo-600'></i> Gestão Financeira e Estoque
-            </h2>
-            
-            <div class="flex border-b border-gray-200 mb-6">
-                <button data-tab="stock" class="p-3 text-sm font-medium border-b-2 border-indigo-600 text-indigo-700">Inventário de Materiais</button>
-                <button data-tab="receivable" class="p-3 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700">Contas a Receber</button>
-                <button data-tab="expense" class="p-3 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700">Despesas</button>
-            </div>
-
-            <div id="financial-tab-content">
-                </div>
-        </div>
-    `;
-
-    const tabContentContainer = document.getElementById('financial-tab-content');
-    
-    // Configura listeners para troca de abas
-    document.querySelectorAll('[data-tab]').forEach(tabBtn => {
-        tabBtn.addEventListener('click', () => {
-            document.querySelectorAll('[data-tab]').forEach(btn => {
-                btn.classList.remove('border-indigo-600', 'text-indigo-700');
-                btn.classList.add('border-transparent', 'text-gray-500', 'hover:border-gray-300', 'hover:text-gray-700');
-            });
-            tabBtn.classList.add('border-indigo-600', 'text-indigo-700');
-            tabBtn.classList.remove('border-transparent', 'text-gray-500', 'hover:border-gray-300', 'hover:text-gray-700');
-
-            renderFinancialTab(tabBtn.dataset.tab, tabContentContainer);
-        });
-    });
-
-    // Renderiza a aba de estoque por padrão
-    renderFinancialTab('stock', tabContentContainer);
-};
-
-// Nova função para gerenciar a renderização interna da aba Financeiro
-const renderFinancialTab = (tab, container) => {
-    container.innerHTML = ''; // Limpa o container antes de carregar
-
-    if (tab === 'stock') {
-        container.innerHTML = `
-            <div class="flex justify-between items-center mb-6">
-                <h3 class="text-xl font-semibold text-gray-700">Inventário de Materiais</h3>
-                <button id="add-stock-btn" class="py-2 px-4 bg-green-600 hover:bg-green-700 text-white font-bold rounded-lg transition duration-200 shadow-md flex items-center justify-center">
-                    <i class='bx bx-plus-circle text-xl mr-2'></i> Novo Item
-                </button>
-            </div>
-            <div class="overflow-x-auto bg-gray-50 rounded-xl shadow-inner border border-gray-200">
-                <table class="min-w-full divide-y divide-gray-200">
-                    <thead class="bg-gray-200">
-                        <tr>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Material</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Qtde</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Custo Médio</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Fornecedor</th>
-                            <th class="px-6 py-3 text-right text-xs font-bold text-gray-600 uppercase">Ações</th>
-                        </tr>
-                    </thead>
-                    <tbody id="stock-table-body" class="bg-white divide-y divide-gray-200">
-                        <tr><td colspan="5" class="px-6 py-4 text-center text-gray-500 italic">Carregando estoque...</td></tr>
-                    </tbody>
-                </table>
-            </div>
-        `;
-        document.getElementById('add-stock-btn').addEventListener('click', () => openStockFormModal());
-        loadStock();
-
-    } else if (tab === 'receivable') {
-        container.innerHTML = `
-            <div class="flex justify-between items-center mb-6">
-                <h3 class="text-xl font-semibold text-gray-700">Contas a Receber</h3>
-                <button id="add-receivable-btn" class="py-2 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg transition duration-200 shadow-md flex items-center justify-center">
-                    <i class='bx bx-plus-circle text-xl mr-2'></i> Registrar Serviço
-                </button>
-            </div>
-
-            <div class="grid grid-cols-3 gap-4 mb-6">
-                <div class="p-4 bg-green-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Total a Receber</p><p class="text-2xl font-bold text-green-800" id="total-receivable">${formatCurrency(0)}</p></div>
-                <div class="p-4 bg-yellow-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Recebido no Mês</p><p class="text-2xl font-bold text-yellow-800" id="received-this-month">${formatCurrency(0)}</p></div>
-                <div class="p-4 bg-gray-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Contas Abertas</p><p class="text-2xl font-bold text-gray-800" id="open-receivable-count">0</p></div>
-            </div>
-
-            <div class="overflow-x-auto bg-gray-50 rounded-xl shadow-inner border border-gray-200">
-                <table class="min-w-full divide-y divide-gray-200">
-                    <thead class="bg-gray-200">
-                        <tr>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Paciente</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Vencimento</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Descrição</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Valor</th>
-                            <th class="px-6 py-3 text-right text-xs font-bold text-gray-600 uppercase">Status/Ações</th>
-                        </tr>
-                    </thead>
-                    <tbody id="receivable-table-body" class="bg-white divide-y divide-gray-200">
-                        <tr><td colspan="5" class="px-6 py-4 text-center text-gray-500 italic">Carregando contas a receber...</td></tr>
-                    </tbody>
-                </table>
-            </div>
-        `;
-        document.getElementById('add-receivable-btn').addEventListener('click', () => openReceivableFormModal());
-        loadReceivable();
-
-    } else if (tab === 'expense') {
-        container.innerHTML = `
-            <div class="flex justify-between items-center mb-6">
-                <h3 class="text-xl font-semibold text-gray-700">Registro de Despesas (Contas a Pagar)</h3>
-                <button id="add-expense-btn" class="py-2 px-4 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg transition duration-200 shadow-md flex items-center justify-center">
-                    <i class='bx bx-minus-circle text-xl mr-2'></i> Registrar Despesa
-                </button>
-            </div>
-
-            <div class="grid grid-cols-3 gap-4 mb-6">
-                <div class="p-4 bg-red-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Total Despesas Abertas</p><p class="text-2xl font-bold text-red-800" id="total-expense-open">${formatCurrency(0)}</p></div>
-                <div class="p-4 bg-green-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Próximo Vencimento</p><p class="text-2xl font-bold text-green-800" id="next-due-date">N/A</p></div>
-                <div class="p-4 bg-gray-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Total Pago no Mês</p><p class="text-2xl font-bold text-gray-800" id="paid-this-month">${formatCurrency(0)}</p></div>
-            </div>
-
-            <div class="overflow-x-auto bg-gray-50 rounded-xl shadow-inner border border-gray-200">
-                <table class="min-w-full divide-y divide-gray-200">
-                    <thead class="bg-gray-200">
-                        <tr>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Vencimento</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Fornecedor</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Nota/Ref</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Valor</th>
-                            <th class="px-6 py-3 text-right text-xs font-bold text-gray-600 uppercase">Status/Ações</th>
-                        </tr>
-                    </thead>
-                    <tbody id="expense-table-body" class="bg-white divide-y divide-gray-200">
-                        <tr><td colspan="5" class="px-6 py-4 text-center text-gray-500 italic">Carregando despesas...</td></tr>
-                    </tbody>
-                </table>
-            </div>
-        `;
-        document.getElementById('add-expense-btn').addEventListener('click', () => openExpenseFormModal());
-        loadExpenses();
-    }
-};
-
-// Nova função para gerenciar a renderização interna da aba Financeiro
-const loadPatientServiceHistory = (patientId) => {
-    const historyContainer = document.getElementById('patient-service-history');
-    if (!historyContainer) return;
-    
-    // Filtra as contas a receber pelo patientId
-    const receivableRef = db.ref(getReceivablePath(currentUser.uid)).orderByChild('patientId').equalTo(patientId);
-
-    receivableRef.once('value', async (snapshot) => {
-        const servicesObject = snapshot.val();
-        let serviceHistoryHTML = '';
-
-        if (servicesObject) {
-            const servicesList = Object.keys(servicesObject).map(key => ({ id: key, ...servicesObject[key] }));
-            
-            for (const service of servicesList) {
-                // Carregar materiais consumidos para cada serviço
-                const materialsRef = db.ref(getReceivableMaterialsPath(service.id));
-                const materialsSnapshot = await materialsRef.once('value');
-                const materialsObject = materialsSnapshot.val();
-                let materialsHTML = '';
-                let serviceCost = 0; // Custo de materiais para este serviço
-
-                if (materialsObject) {
-                    const materialsList = Object.keys(materialsObject).map(key => materialsObject[key]);
-                    
-                    materialsHTML = materialsList.map(m => {
-                        // Usamos o cache de estoque em memória para obter o custo
-                        const stockItem = stockItems.find(i => i.id === m.materialId);
-                        const costPerUnit = stockItem ? stockItem.cost : 0;
-                        const totalItemCost = costPerUnit * m.quantityUsed;
-                        serviceCost += totalItemCost;
-                        
-                        return `<li class="ml-4 text-xs text-gray-600">
-                            - ${m.quantityUsed} ${m.unit} de ${m.name} (Custo: ${formatCurrency(totalItemCost)})
-                        </li>`;
-                    }).join('');
-                }
-                
-                const statusColor = service.status === 'Recebido' ? 'text-green-600' : (service.status === 'Atrasado' ? 'text-red-600' : 'text-yellow-600');
-                
-                serviceHistoryHTML += `
-                    <div class="mb-4 p-3 border rounded-lg shadow-sm ${service.status === 'Recebido' ? 'bg-green-50' : 'bg-gray-50'}">
-                        <div class="flex justify-between items-center">
-                            <span class="font-semibold text-sm text-gray-800">Serviço: ${service.description} (${formatCurrency(service.amount)})</span>
-                            <span class="text-xs ${statusColor} font-bold">${service.status}</span>
-                        </div>
-                        <p class="text-xs text-gray-500 mb-2">Vencimento: ${service.dueDate}</p>
-                        
-                        <h5 class="text-xs font-semibold mt-2 text-indigo-700">Materiais (Custo total: ${formatCurrency(serviceCost)}):</h5>
-                        <ul class="list-disc list-inside">
-                            ${materialsHTML || '<li class="ml-4 italic text-gray-500 text-xs">Nenhum material registrado.</li>'}
-                        </ul>
-                    </div>
-                `;
-            }
-        }
-        
-        historyContainer.innerHTML = serviceHistoryHTML || '<p class="text-center text-gray-500 italic">Nenhum serviço financeiro registrado para este paciente.</p>';
-        
-    }).catch(e => {
-        historyContainer.innerHTML = `<p class="text-red-500">Erro ao carregar histórico: ${e.message}</p>`;
-        console.error("Erro ao carregar histórico financeiro do paciente:", e);
-    });
-};
-
-
-const setupJournalListeners = (patient) => {
-    const timeline = document.getElementById('journal-timeline');
-    const responseInput = document.getElementById('dentist-response-input');
-    const sendBtn = document.getElementById('send-response-btn');
-    const askAiBtn = document.getElementById('ask-ai-btn');
-    const mediaBtn = document.getElementById('attach-media-btn');
-    const mediaInput = document.getElementById('media-input');
-    const fileNameDisplay = document.getElementById('file-name-display');
-    
-    let currentFile = null;
-
-    mediaInput.addEventListener('change', (e) => {
-        currentFile = e.target.files[0] || null;
-        fileNameDisplay.textContent = currentFile ? formatFileName(currentFile.name) : '';
-    });
-    mediaBtn.addEventListener('click', () => mediaInput.click());
-
-    sendBtn.addEventListener('click', () => {
-        sendJournalEntry(patient, responseInput.value, 'Dentista', currentFile);
-        responseInput.value = '';
-        currentFile = null;
-        fileNameDisplay.textContent = '';
-    });
-    
-    askAiBtn.addEventListener('click', () => handleAIRequest(patient));
-
-    // RTDB ADAPTADO: Listener para o Diário
-    const journalRef = db.ref(getJournalCollectionPath(patient.id));
-    journalRef.orderByChild('timestamp').on('value', snapshot => {
-        const entriesObject = snapshot.val();
-        const entries = [];
-        if (entriesObject) {
-            Object.keys(entriesObject).forEach(key => {
-                 // RTDB não tem um objeto Date, então usamos o new Date(ISO String)
-                entries.push({ id: key, ...entriesObject[key], timestamp: new Date(entriesObject[key].timestamp) });
-            });
-        }
-        // O RTDB ordena do mais antigo para o mais novo, precisamos inverter para mostrar o mais recente em cima.
-        entries.reverse();
-        renderJournalEntries(timeline, entries);
-    }, e => showNotification(`Erro ao carregar diário (RTDB): ${e.message}`, 'error'));
-};
-
-const sendJournalEntry = async (patient, text, author, file) => {
-    if (!text.trim() && !file) return;
-
-    let mediaData = null;
-    let uploadPromise = Promise.resolve(null);
-    
-    if (file) {
-        uploadPromise = window.uploadToCloudinary(file).then(res => {
-            showNotification(`Arquivo ${file.name} enviado para Cloudinary!`, 'success');
-            return res;
-        }).catch(error => {
-            showNotification(`Falha ao carregar arquivo: ${error.message}`, 'error');
-            return null;
-        });
-    }
-
-    mediaData = await uploadPromise;
-
-    if (!text.trim() && !mediaData) return;
-    
-    const entryData = {
-        text: text.trim(),
-        author: author,
-        isAI: author.includes('IA'),
-        timestamp: new Date().toISOString(), // Usamos ISO String para o RTDB
-        media: mediaData
-    };
-
-    try {
-        // RTDB ADAPTADO: Usando .push() para criar um novo nó de entrada
-        await db.ref(getJournalCollectionPath(patient.id)).push(entryData);
-    } catch (e) {
-        showNotification(`Erro ao enviar entrada (RTDB): ${e.message}`, 'error');
-    }
-};
-
-const handleAIRequest = async (patient) => {
-    const askAiBtn = document.getElementById('ask-ai-btn');
-    askAiBtn.disabled = true;
-    askAiBtn.innerHTML = "<i class='bx bx-loader-alt bx-spin text-xl mr-2'></i> IA Pensando...";
-    
-    try {
-        // 1. Obter as diretrizes do BRAIN (RTDB ADAPTADO)
-        const brainRef = db.ref(getAdminCollectionPath(currentUser.uid, 'aiConfig') + '/directives');
-        const brainSnap = await brainRef.once('value');
-        const directives = brainSnap.exists() ? brainSnap.val().promptDirectives : 'Atuar como assistente padrão de clínica odontológica.';
-        
-        // 2. Personalizar o Prompt de Sistema
-        const systemPrompt = directives
-            .replace(/Variável de Tratamento: \[TIPO\]/, `Variável de Tratamento: ${patient.treatmentType || 'Geral'}`)
-            .replace(/Meta: \[META\]/, `Meta: ${patient.treatmentGoal || 'N/A'}`);
-        
-        // 3. Montar a Mensagem do Usuário (Contexto)
-        const userMessage = `Você é o assistente do Dr(a). ${currentUser.email}. O paciente ${patient.name} com tratamento "${patient.treatmentType}" e meta "${patient.treatmentGoal}" acaba de solicitar uma orientação/status. Responda-o com base nas diretrizes. Use um tom encorajador e profissional.`;
-
-        // 4. CHAMA A FUNÇÃO REAL DA API
-        const geminiResponseText = await window.callGeminiAPI(systemPrompt, userMessage);
-        
-        // 5. Enviar a resposta da IA para o Diário
-        sendJournalEntry(patient, geminiResponseText, 'Assistente IA', null);
-
-    } catch (e) {
-        showNotification(`Erro na solicitação de IA: ${e.message}`, 'error');
-        console.error("Erro na solicitação de IA:", e);
-    } finally {
-        askAiBtn.disabled = false;
-        askAiBtn.innerHTML = "<i class='bx bxs-brain text-xl mr-2'></i> Pedir Ajuda à IA";
-    }
-};
-
-
-const renderJournalEntries = (container, entries) => {
-    container.innerHTML = entries.map(entry => {
-        const isDentist = entry.author === 'Dentista';
-        const isAI = entry.isAI;
-        const entryClass = isDentist ? 'entry-dentist' : (isAI ? 'entry-ai' : 'entry-patient');
-        
-        const mediaHtml = entry.media ? `
-            <div class="mt-2 p-1 bg-white rounded border border-gray-300 text-xs flex items-center justify-between">
-                <i class='bx bx-image text-base mr-1 text-indigo-600'></i>
-                <span>${formatFileName(entry.media.name)}</span>
-                <a href="${entry.media.url}" target="_blank" class="text-indigo-600 hover:underline ml-2">Ver</a>
-            </div>
-        ` : '';
-
-        return `
-            <div class="journal-entry ${entryClass}">
-                <div class="flex justify-between items-center mb-1">
-                    <span class="text-xs font-semibold ${isDentist ? 'text-indigo-700' : (isAI ? 'text-cyan-700' : 'text-gray-700')}">
-                        ${entry.author}
-                    </span>
-                    <span class="text-xs text-gray-500">
-                        ${entry.timestamp ? formatDateTime(entry.timestamp.toISOString()) : 'Carregando...'}
-                    </span>
-                </div>
-                <p class="text-gray-800 text-sm whitespace-pre-wrap">${entry.text}</p>
-                ${mediaHtml}
-            </div>
-        `;
-    }).join('');
-};
-
-
-// --- 3. GESTÃO FINANCEIRA (INCLUINDO ESTOQUE/MATERIAIS) ---
-const renderFinancialManager = (container) => {
-    container.innerHTML = `
-        <div class="p-8 bg-white shadow-2xl rounded-2xl border border-indigo-100">
-            <h2 class="text-3xl font-extrabold text-indigo-800 mb-8 flex items-center">
-                <i class='bx bxs-wallet text-3xl mr-3 text-indigo-600'></i> Gestão Financeira e Estoque
-            </h2>
-            
-            <div class="flex border-b border-gray-200 mb-6">
-                <button data-tab="stock" class="p-3 text-sm font-medium border-b-2 border-indigo-600 text-indigo-700">Inventário de Materiais</button>
-                <button data-tab="receivable" class="p-3 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700">Contas a Receber</button>
-                <button data-tab="expense" class="p-3 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700">Despesas</button>
-            </div>
-
-            <div id="financial-tab-content">
-                </div>
-        </div>
-    `;
-
-    const tabContentContainer = document.getElementById('financial-tab-content');
-    
-    // Configura listeners para troca de abas
-    document.querySelectorAll('[data-tab]').forEach(tabBtn => {
-        tabBtn.addEventListener('click', () => {
-            document.querySelectorAll('[data-tab]').forEach(btn => {
-                btn.classList.remove('border-indigo-600', 'text-indigo-700');
-                btn.classList.add('border-transparent', 'text-gray-500', 'hover:border-gray-300', 'hover:text-gray-700');
-            });
-            tabBtn.classList.add('border-indigo-600', 'text-indigo-700');
-            tabBtn.classList.remove('border-transparent', 'text-gray-500', 'hover:border-gray-300', 'hover:text-gray-700');
-
-            renderFinancialTab(tabBtn.dataset.tab, tabContentContainer);
-        });
-    });
-
-    // Renderiza a aba de estoque por padrão
-    renderFinancialTab('stock', tabContentContainer);
-};
-
-// Nova função para gerenciar a renderização interna da aba Financeiro
-const renderFinancialTab = (tab, container) => {
-    container.innerHTML = ''; // Limpa o container antes de carregar
-
-    if (tab === 'stock') {
-        container.innerHTML = `
-            <div class="flex justify-between items-center mb-6">
-                <h3 class="text-xl font-semibold text-gray-700">Inventário de Materiais</h3>
-                <button id="add-stock-btn" class="py-2 px-4 bg-green-600 hover:bg-green-700 text-white font-bold rounded-lg transition duration-200 shadow-md flex items-center justify-center">
-                    <i class='bx bx-plus-circle text-xl mr-2'></i> Novo Item
-                </button>
-            </div>
-            <div class="overflow-x-auto bg-gray-50 rounded-xl shadow-inner border border-gray-200">
-                <table class="min-w-full divide-y divide-gray-200">
-                    <thead class="bg-gray-200">
-                        <tr>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Material</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Qtde</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Custo Médio</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Fornecedor</th>
-                            <th class="px-6 py-3 text-right text-xs font-bold text-gray-600 uppercase">Ações</th>
-                        </tr>
-                    </thead>
-                    <tbody id="stock-table-body" class="bg-white divide-y divide-gray-200">
-                        <tr><td colspan="5" class="px-6 py-4 text-center text-gray-500 italic">Carregando estoque...</td></tr>
-                    </tbody>
-                </table>
-            </div>
-        `;
-        document.getElementById('add-stock-btn').addEventListener('click', () => openStockFormModal());
-        loadStock();
-
-    } else if (tab === 'receivable') {
-        container.innerHTML = `
-            <div class="flex justify-between items-center mb-6">
-                <h3 class="text-xl font-semibold text-gray-700">Contas a Receber</h3>
-                <button id="add-receivable-btn" class="py-2 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg transition duration-200 shadow-md flex items-center justify-center">
-                    <i class='bx bx-plus-circle text-xl mr-2'></i> Registrar Serviço
-                </button>
-            </div>
-
-            <div class="grid grid-cols-3 gap-4 mb-6">
-                <div class="p-4 bg-green-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Total a Receber</p><p class="text-2xl font-bold text-green-800" id="total-receivable">${formatCurrency(0)}</p></div>
-                <div class="p-4 bg-yellow-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Recebido no Mês</p><p class="text-2xl font-bold text-yellow-800" id="received-this-month">${formatCurrency(0)}</p></div>
-                <div class="p-4 bg-gray-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Contas Abertas</p><p class="text-2xl font-bold text-gray-800" id="open-receivable-count">0</p></div>
-            </div>
-
-            <div class="overflow-x-auto bg-gray-50 rounded-xl shadow-inner border border-gray-200">
-                <table class="min-w-full divide-y divide-gray-200">
-                    <thead class="bg-gray-200">
-                        <tr>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Paciente</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Vencimento</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Descrição</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Valor</th>
-                            <th class="px-6 py-3 text-right text-xs font-bold text-gray-600 uppercase">Status/Ações</th>
-                        </tr>
-                    </thead>
-                    <tbody id="receivable-table-body" class="bg-white divide-y divide-gray-200">
-                        <tr><td colspan="5" class="px-6 py-4 text-center text-gray-500 italic">Carregando contas a receber...</td></tr>
-                    </tbody>
-                </table>
-            </div>
-        `;
-        document.getElementById('add-receivable-btn').addEventListener('click', () => openReceivableFormModal());
-        loadReceivable();
-
-    } else if (tab === 'expense') {
-        container.innerHTML = `
-            <div class="flex justify-between items-center mb-6">
-                <h3 class="text-xl font-semibold text-gray-700">Registro de Despesas (Contas a Pagar)</h3>
-                <button id="add-expense-btn" class="py-2 px-4 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg transition duration-200 shadow-md flex items-center justify-center">
-                    <i class='bx bx-minus-circle text-xl mr-2'></i> Registrar Despesa
-                </button>
-            </div>
-
-            <div class="grid grid-cols-3 gap-4 mb-6">
-                <div class="p-4 bg-red-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Total Despesas Abertas</p><p class="text-2xl font-bold text-red-800" id="total-expense-open">${formatCurrency(0)}</p></div>
-                <div class="p-4 bg-green-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Próximo Vencimento</p><p class="text-2xl font-bold text-green-800" id="next-due-date">N/A</p></div>
-                <div class="p-4 bg-gray-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Total Pago no Mês</p><p class="text-2xl font-bold text-gray-800" id="paid-this-month">${formatCurrency(0)}</p></div>
-            </div>
-
-            <div class="overflow-x-auto bg-gray-50 rounded-xl shadow-inner border border-gray-200">
-                <table class="min-w-full divide-y divide-gray-200">
-                    <thead class="bg-gray-200">
-                        <tr>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Vencimento</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Fornecedor</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Nota/Ref</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Valor</th>
-                            <th class="px-6 py-3 text-right text-xs font-bold text-gray-600 uppercase">Status/Ações</th>
-                        </tr>
-                    </thead>
-                    <tbody id="expense-table-body" class="bg-white divide-y divide-gray-200">
-                        <tr><td colspan="5" class="px-6 py-4 text-center text-gray-500 italic">Carregando despesas...</td></tr>
-                    </tbody>
-                </table>
-            </div>
-        `;
-        document.getElementById('add-expense-btn').addEventListener('click', () => openExpenseFormModal());
-        loadExpenses();
-    }
-};
-
-// Nova função para gerenciar a renderização interna da aba Financeiro
-const loadPatientServiceHistory = (patientId) => {
-    const historyContainer = document.getElementById('patient-service-history');
-    if (!historyContainer) return;
-    
-    // Filtra as contas a receber pelo patientId
-    const receivableRef = db.ref(getReceivablePath(currentUser.uid)).orderByChild('patientId').equalTo(patientId);
-
-    receivableRef.once('value', async (snapshot) => {
-        const servicesObject = snapshot.val();
-        let serviceHistoryHTML = '';
-
-        if (servicesObject) {
-            const servicesList = Object.keys(servicesObject).map(key => ({ id: key, ...servicesObject[key] }));
-            
-            for (const service of servicesList) {
-                // Carregar materiais consumidos para cada serviço
-                const materialsRef = db.ref(getReceivableMaterialsPath(service.id));
-                const materialsSnapshot = await materialsRef.once('value');
-                const materialsObject = materialsSnapshot.val();
-                let materialsHTML = '';
-                let serviceCost = 0; // Custo de materiais para este serviço
-
-                if (materialsObject) {
-                    const materialsList = Object.keys(materialsObject).map(key => materialsObject[key]);
-                    
-                    materialsHTML = materialsList.map(m => {
-                        // Usamos o cache de estoque em memória para obter o custo
-                        const stockItem = stockItems.find(i => i.id === m.materialId);
-                        const costPerUnit = stockItem ? stockItem.cost : 0;
-                        const totalItemCost = costPerUnit * m.quantityUsed;
-                        serviceCost += totalItemCost;
-                        
-                        return `<li class="ml-4 text-xs text-gray-600">
-                            - ${m.quantityUsed} ${m.unit} de ${m.name} (Custo: ${formatCurrency(totalItemCost)})
-                        </li>`;
-                    }).join('');
-                }
-                
-                const statusColor = service.status === 'Recebido' ? 'text-green-600' : (service.status === 'Atrasado' ? 'text-red-600' : 'text-yellow-600');
-                
-                serviceHistoryHTML += `
-                    <div class="mb-4 p-3 border rounded-lg shadow-sm ${service.status === 'Recebido' ? 'bg-green-50' : 'bg-gray-50'}">
-                        <div class="flex justify-between items-center">
-                            <span class="font-semibold text-sm text-gray-800">Serviço: ${service.description} (${formatCurrency(service.amount)})</span>
-                            <span class="text-xs ${statusColor} font-bold">${service.status}</span>
-                        </div>
-                        <p class="text-xs text-gray-500 mb-2">Vencimento: ${service.dueDate}</p>
-                        
-                        <h5 class="text-xs font-semibold mt-2 text-indigo-700">Materiais (Custo total: ${formatCurrency(serviceCost)}):</h5>
-                        <ul class="list-disc list-inside">
-                            ${materialsHTML || '<li class="ml-4 italic text-gray-500 text-xs">Nenhum material registrado.</li>'}
-                        </ul>
-                    </div>
-                `;
-            }
-        }
-        
-        historyContainer.innerHTML = serviceHistoryHTML || '<p class="text-center text-gray-500 italic">Nenhum serviço financeiro registrado para este paciente.</p>';
-        
-    }).catch(e => {
-        historyContainer.innerHTML = `<p class="text-red-500">Erro ao carregar histórico: ${e.message}</p>`;
-        console.error("Erro ao carregar histórico financeiro do paciente:", e);
-    });
-};
-
-
-const setupJournalListeners = (patient) => {
-    const timeline = document.getElementById('journal-timeline');
-    const responseInput = document.getElementById('dentist-response-input');
-    const sendBtn = document.getElementById('send-response-btn');
-    const askAiBtn = document.getElementById('ask-ai-btn');
-    const mediaBtn = document.getElementById('attach-media-btn');
-    const mediaInput = document.getElementById('media-input');
-    const fileNameDisplay = document.getElementById('file-name-display');
-    
-    let currentFile = null;
-
-    mediaInput.addEventListener('change', (e) => {
-        currentFile = e.target.files[0] || null;
-        fileNameDisplay.textContent = currentFile ? formatFileName(currentFile.name) : '';
-    });
-    mediaBtn.addEventListener('click', () => mediaInput.click());
-
-    sendBtn.addEventListener('click', () => {
-        sendJournalEntry(patient, responseInput.value, 'Dentista', currentFile);
-        responseInput.value = '';
-        currentFile = null;
-        fileNameDisplay.textContent = '';
-    });
-    
-    askAiBtn.addEventListener('click', () => handleAIRequest(patient));
-
-    // RTDB ADAPTADO: Listener para o Diário
-    const journalRef = db.ref(getJournalCollectionPath(patient.id));
-    journalRef.orderByChild('timestamp').on('value', snapshot => {
-        const entriesObject = snapshot.val();
-        const entries = [];
-        if (entriesObject) {
-            Object.keys(entriesObject).forEach(key => {
-                 // RTDB não tem um objeto Date, então usamos o new Date(ISO String)
-                entries.push({ id: key, ...entriesObject[key], timestamp: new Date(entriesObject[key].timestamp) });
-            });
-        }
-        // O RTDB ordena do mais antigo para o mais novo, precisamos inverter para mostrar o mais recente em cima.
-        entries.reverse();
-        renderJournalEntries(timeline, entries);
-    }, e => showNotification(`Erro ao carregar diário (RTDB): ${e.message}`, 'error'));
-};
-
-const sendJournalEntry = async (patient, text, author, file) => {
-    if (!text.trim() && !file) return;
-
-    let mediaData = null;
-    let uploadPromise = Promise.resolve(null);
-    
-    if (file) {
-        uploadPromise = window.uploadToCloudinary(file).then(res => {
-            showNotification(`Arquivo ${file.name} enviado para Cloudinary!`, 'success');
-            return res;
-        }).catch(error => {
-            showNotification(`Falha ao carregar arquivo: ${error.message}`, 'error');
-            return null;
-        });
-    }
-
-    mediaData = await uploadPromise;
-
-    if (!text.trim() && !mediaData) return;
-    
-    const entryData = {
-        text: text.trim(),
-        author: author,
-        isAI: author.includes('IA'),
-        timestamp: new Date().toISOString(), // Usamos ISO String para o RTDB
-        media: mediaData
-    };
-
-    try {
-        // RTDB ADAPTADO: Usando .push() para criar um novo nó de entrada
-        await db.ref(getJournalCollectionPath(patient.id)).push(entryData);
-    } catch (e) {
-        showNotification(`Erro ao enviar entrada (RTDB): ${e.message}`, 'error');
-    }
-};
-
-const handleAIRequest = async (patient) => {
-    const askAiBtn = document.getElementById('ask-ai-btn');
-    askAiBtn.disabled = true;
-    askAiBtn.innerHTML = "<i class='bx bx-loader-alt bx-spin text-xl mr-2'></i> IA Pensando...";
-    
-    try {
-        // 1. Obter as diretrizes do BRAIN (RTDB ADAPTADO)
-        const brainRef = db.ref(getAdminCollectionPath(currentUser.uid, 'aiConfig') + '/directives');
-        const brainSnap = await brainRef.once('value');
-        const directives = brainSnap.exists() ? brainSnap.val().promptDirectives : 'Atuar como assistente padrão de clínica odontológica.';
-        
-        // 2. Personalizar o Prompt de Sistema
-        const systemPrompt = directives
-            .replace(/Variável de Tratamento: \[TIPO\]/, `Variável de Tratamento: ${patient.treatmentType || 'Geral'}`)
-            .replace(/Meta: \[META\]/, `Meta: ${patient.treatmentGoal || 'N/A'}`);
-        
-        // 3. Montar a Mensagem do Usuário (Contexto)
-        const userMessage = `Você é o assistente do Dr(a). ${currentUser.email}. O paciente ${patient.name} com tratamento "${patient.treatmentType}" e meta "${patient.treatmentGoal}" acaba de solicitar uma orientação/status. Responda-o com base nas diretrizes. Use um tom encorajador e profissional.`;
-
-        // 4. CHAMA A FUNÇÃO REAL DA API
-        const geminiResponseText = await window.callGeminiAPI(systemPrompt, userMessage);
-        
-        // 5. Enviar a resposta da IA para o Diário
-        sendJournalEntry(patient, geminiResponseText, 'Assistente IA', null);
-
-    } catch (e) {
-        showNotification(`Erro na solicitação de IA: ${e.message}`, 'error');
-        console.error("Erro na solicitação de IA:", e);
-    } finally {
-        askAiBtn.disabled = false;
-        askAiBtn.innerHTML = "<i class='bx bxs-brain text-xl mr-2'></i> Pedir Ajuda à IA";
-    }
-};
-
-
-const renderJournalEntries = (container, entries) => {
-    container.innerHTML = entries.map(entry => {
-        const isDentist = entry.author === 'Dentista';
-        const isAI = entry.isAI;
-        const entryClass = isDentist ? 'entry-dentist' : (isAI ? 'entry-ai' : 'entry-patient');
-        
-        const mediaHtml = entry.media ? `
-            <div class="mt-2 p-1 bg-white rounded border border-gray-300 text-xs flex items-center justify-between">
-                <i class='bx bx-image text-base mr-1 text-indigo-600'></i>
-                <span>${formatFileName(entry.media.name)}</span>
-                <a href="${entry.media.url}" target="_blank" class="text-indigo-600 hover:underline ml-2">Ver</a>
-            </div>
-        ` : '';
-
-        return `
-            <div class="journal-entry ${entryClass}">
-                <div class="flex justify-between items-center mb-1">
-                    <span class="text-xs font-semibold ${isDentist ? 'text-indigo-700' : (isAI ? 'text-cyan-700' : 'text-gray-700')}">
-                        ${entry.author}
-                    </span>
-                    <span class="text-xs text-gray-500">
-                        ${entry.timestamp ? formatDateTime(entry.timestamp.toISOString()) : 'Carregando...'}
-                    </span>
-                </div>
-                <p class="text-gray-800 text-sm whitespace-pre-wrap">${entry.text}</p>
-                ${mediaHtml}
-            </div>
-        `;
-    }).join('');
-};
-
-
-// --- 3. GESTÃO FINANCEIRA (INCLUINDO ESTOQUE/MATERIAIS) ---
-const renderFinancialManager = (container) => {
-    container.innerHTML = `
-        <div class="p-8 bg-white shadow-2xl rounded-2xl border border-indigo-100">
-            <h2 class="text-3xl font-extrabold text-indigo-800 mb-8 flex items-center">
-                <i class='bx bxs-wallet text-3xl mr-3 text-indigo-600'></i> Gestão Financeira e Estoque
-            </h2>
-            
-            <div class="flex border-b border-gray-200 mb-6">
-                <button data-tab="stock" class="p-3 text-sm font-medium border-b-2 border-indigo-600 text-indigo-700">Inventário de Materiais</button>
-                <button data-tab="receivable" class="p-3 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700">Contas a Receber</button>
-                <button data-tab="expense" class="p-3 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700">Despesas</button>
-            </div>
-
-            <div id="financial-tab-content">
-                </div>
-        </div>
-    `;
-
-    const tabContentContainer = document.getElementById('financial-tab-content');
-    
-    // Configura listeners para troca de abas
-    document.querySelectorAll('[data-tab]').forEach(tabBtn => {
-        tabBtn.addEventListener('click', () => {
-            document.querySelectorAll('[data-tab]').forEach(btn => {
-                btn.classList.remove('border-indigo-600', 'text-indigo-700');
-                btn.classList.add('border-transparent', 'text-gray-500', 'hover:border-gray-300', 'hover:text-gray-700');
-            });
-            tabBtn.classList.add('border-indigo-600', 'text-indigo-700');
-            tabBtn.classList.remove('border-transparent', 'text-gray-500', 'hover:border-gray-300', 'hover:text-gray-700');
-
-            renderFinancialTab(tabBtn.dataset.tab, tabContentContainer);
-        });
-    });
-
-    // Renderiza a aba de estoque por padrão
-    renderFinancialTab('stock', tabContentContainer);
-};
-
-// Nova função para gerenciar a renderização interna da aba Financeiro
-const renderFinancialTab = (tab, container) => {
-    container.innerHTML = ''; // Limpa o container antes de carregar
-
-    if (tab === 'stock') {
-        container.innerHTML = `
-            <div class="flex justify-between items-center mb-6">
-                <h3 class="text-xl font-semibold text-gray-700">Inventário de Materiais</h3>
-                <button id="add-stock-btn" class="py-2 px-4 bg-green-600 hover:bg-green-700 text-white font-bold rounded-lg transition duration-200 shadow-md flex items-center justify-center">
-                    <i class='bx bx-plus-circle text-xl mr-2'></i> Novo Item
-                </button>
-            </div>
-            <div class="overflow-x-auto bg-gray-50 rounded-xl shadow-inner border border-gray-200">
-                <table class="min-w-full divide-y divide-gray-200">
-                    <thead class="bg-gray-200">
-                        <tr>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Material</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Qtde</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Custo Médio</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Fornecedor</th>
-                            <th class="px-6 py-3 text-right text-xs font-bold text-gray-600 uppercase">Ações</th>
-                        </tr>
-                    </thead>
-                    <tbody id="stock-table-body" class="bg-white divide-y divide-gray-200">
-                        <tr><td colspan="5" class="px-6 py-4 text-center text-gray-500 italic">Carregando estoque...</td></tr>
-                    </tbody>
-                </table>
-            </div>
-        `;
-        document.getElementById('add-stock-btn').addEventListener('click', () => openStockFormModal());
-        loadStock();
-
-    } else if (tab === 'receivable') {
-        container.innerHTML = `
-            <div class="flex justify-between items-center mb-6">
-                <h3 class="text-xl font-semibold text-gray-700">Contas a Receber</h3>
-                <button id="add-receivable-btn" class="py-2 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg transition duration-200 shadow-md flex items-center justify-center">
-                    <i class='bx bx-plus-circle text-xl mr-2'></i> Registrar Serviço
-                </button>
-            </div>
-
-            <div class="grid grid-cols-3 gap-4 mb-6">
-                <div class="p-4 bg-green-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Total a Receber</p><p class="text-2xl font-bold text-green-800" id="total-receivable">${formatCurrency(0)}</p></div>
-                <div class="p-4 bg-yellow-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Recebido no Mês</p><p class="text-2xl font-bold text-yellow-800" id="received-this-month">${formatCurrency(0)}</p></div>
-                <div class="p-4 bg-gray-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Contas Abertas</p><p class="text-2xl font-bold text-gray-800" id="open-receivable-count">0</p></div>
-            </div>
-
-            <div class="overflow-x-auto bg-gray-50 rounded-xl shadow-inner border border-gray-200">
-                <table class="min-w-full divide-y divide-gray-200">
-                    <thead class="bg-gray-200">
-                        <tr>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Paciente</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Vencimento</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Descrição</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Valor</th>
-                            <th class="px-6 py-3 text-right text-xs font-bold text-gray-600 uppercase">Status/Ações</th>
-                        </tr>
-                    </thead>
-                    <tbody id="receivable-table-body" class="bg-white divide-y divide-gray-200">
-                        <tr><td colspan="5" class="px-6 py-4 text-center text-gray-500 italic">Carregando contas a receber...</td></tr>
-                    </tbody>
-                </table>
-            </div>
-        `;
-        document.getElementById('add-receivable-btn').addEventListener('click', () => openReceivableFormModal());
-        loadReceivable();
-
-    } else if (tab === 'expense') {
-        container.innerHTML = `
-            <div class="flex justify-between items-center mb-6">
-                <h3 class="text-xl font-semibold text-gray-700">Registro de Despesas (Contas a Pagar)</h3>
-                <button id="add-expense-btn" class="py-2 px-4 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg transition duration-200 shadow-md flex items-center justify-center">
-                    <i class='bx bx-minus-circle text-xl mr-2'></i> Registrar Despesa
-                </button>
-            </div>
-
-            <div class="grid grid-cols-3 gap-4 mb-6">
-                <div class="p-4 bg-red-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Total Despesas Abertas</p><p class="text-2xl font-bold text-red-800" id="total-expense-open">${formatCurrency(0)}</p></div>
-                <div class="p-4 bg-green-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Próximo Vencimento</p><p class="text-2xl font-bold text-green-800" id="next-due-date">N/A</p></div>
-                <div class="p-4 bg-gray-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Total Pago no Mês</p><p class="text-2xl font-bold text-gray-800" id="paid-this-month">${formatCurrency(0)}</p></div>
-            </div>
-
-            <div class="overflow-x-auto bg-gray-50 rounded-xl shadow-inner border border-gray-200">
-                <table class="min-w-full divide-y divide-gray-200">
-                    <thead class="bg-gray-200">
-                        <tr>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Vencimento</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Fornecedor</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Nota/Ref</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Valor</th>
-                            <th class="px-6 py-3 text-right text-xs font-bold text-gray-600 uppercase">Status/Ações</th>
-                        </tr>
-                    </thead>
-                    <tbody id="expense-table-body" class="bg-white divide-y divide-gray-200">
-                        <tr><td colspan="5" class="px-6 py-4 text-center text-gray-500 italic">Carregando despesas...</td></tr>
-                    </tbody>
-                </table>
-            </div>
-        `;
-        document.getElementById('add-expense-btn').addEventListener('click', () => openExpenseFormModal());
-        loadExpenses();
-    }
-};
-
-// Nova função para gerenciar a renderização interna da aba Financeiro
-const loadPatientServiceHistory = (patientId) => {
-    const historyContainer = document.getElementById('patient-service-history');
-    if (!historyContainer) return;
-    
-    // Filtra as contas a receber pelo patientId
-    const receivableRef = db.ref(getReceivablePath(currentUser.uid)).orderByChild('patientId').equalTo(patientId);
-
-    receivableRef.once('value', async (snapshot) => {
-        const servicesObject = snapshot.val();
-        let serviceHistoryHTML = '';
-
-        if (servicesObject) {
-            const servicesList = Object.keys(servicesObject).map(key => ({ id: key, ...servicesObject[key] }));
-            
-            for (const service of servicesList) {
-                // Carregar materiais consumidos para cada serviço
-                const materialsRef = db.ref(getReceivableMaterialsPath(service.id));
-                const materialsSnapshot = await materialsRef.once('value');
-                const materialsObject = materialsSnapshot.val();
-                let materialsHTML = '';
-                let serviceCost = 0; // Custo de materiais para este serviço
-
-                if (materialsObject) {
-                    const materialsList = Object.keys(materialsObject).map(key => materialsObject[key]);
-                    
-                    materialsHTML = materialsList.map(m => {
-                        // Usamos o cache de estoque em memória para obter o custo
-                        const stockItem = stockItems.find(i => i.id === m.materialId);
-                        const costPerUnit = stockItem ? stockItem.cost : 0;
-                        const totalItemCost = costPerUnit * m.quantityUsed;
-                        serviceCost += totalItemCost;
-                        
-                        return `<li class="ml-4 text-xs text-gray-600">
-                            - ${m.quantityUsed} ${m.unit} de ${m.name} (Custo: ${formatCurrency(totalItemCost)})
-                        </li>`;
-                    }).join('');
-                }
-                
-                const statusColor = service.status === 'Recebido' ? 'text-green-600' : (service.status === 'Atrasado' ? 'text-red-600' : 'text-yellow-600');
-                
-                serviceHistoryHTML += `
-                    <div class="mb-4 p-3 border rounded-lg shadow-sm ${service.status === 'Recebido' ? 'bg-green-50' : 'bg-gray-50'}">
-                        <div class="flex justify-between items-center">
-                            <span class="font-semibold text-sm text-gray-800">Serviço: ${service.description} (${formatCurrency(service.amount)})</span>
-                            <span class="text-xs ${statusColor} font-bold">${service.status}</span>
-                        </div>
-                        <p class="text-xs text-gray-500 mb-2">Vencimento: ${service.dueDate}</p>
-                        
-                        <h5 class="text-xs font-semibold mt-2 text-indigo-700">Materiais (Custo total: ${formatCurrency(serviceCost)}):</h5>
-                        <ul class="list-disc list-inside">
-                            ${materialsHTML || '<li class="ml-4 italic text-gray-500 text-xs">Nenhum material registrado.</li>'}
-                        </ul>
-                    </div>
-                `;
-            }
-        }
-        
-        historyContainer.innerHTML = serviceHistoryHTML || '<p class="text-center text-gray-500 italic">Nenhum serviço financeiro registrado para este paciente.</p>';
-        
-    }).catch(e => {
-        historyContainer.innerHTML = `<p class="text-red-500">Erro ao carregar histórico: ${e.message}</p>`;
-        console.error("Erro ao carregar histórico financeiro do paciente:", e);
-    });
-};
-
-
-const setupJournalListeners = (patient) => {
-    const timeline = document.getElementById('journal-timeline');
-    const responseInput = document.getElementById('dentist-response-input');
-    const sendBtn = document.getElementById('send-response-btn');
-    const askAiBtn = document.getElementById('ask-ai-btn');
-    const mediaBtn = document.getElementById('attach-media-btn');
-    const mediaInput = document.getElementById('media-input');
-    const fileNameDisplay = document.getElementById('file-name-display');
-    
-    let currentFile = null;
-
-    mediaInput.addEventListener('change', (e) => {
-        currentFile = e.target.files[0] || null;
-        fileNameDisplay.textContent = currentFile ? formatFileName(currentFile.name) : '';
-    });
-    mediaBtn.addEventListener('click', () => mediaInput.click());
-
-    sendBtn.addEventListener('click', () => {
-        sendJournalEntry(patient, responseInput.value, 'Dentista', currentFile);
-        responseInput.value = '';
-        currentFile = null;
-        fileNameDisplay.textContent = '';
-    });
-    
-    askAiBtn.addEventListener('click', () => handleAIRequest(patient));
-
-    // RTDB ADAPTADO: Listener para o Diário
-    const journalRef = db.ref(getJournalCollectionPath(patient.id));
-    journalRef.orderByChild('timestamp').on('value', snapshot => {
-        const entriesObject = snapshot.val();
-        const entries = [];
-        if (entriesObject) {
-            Object.keys(entriesObject).forEach(key => {
-                 // RTDB não tem um objeto Date, então usamos o new Date(ISO String)
-                entries.push({ id: key, ...entriesObject[key], timestamp: new Date(entriesObject[key].timestamp) });
-            });
-        }
-        // O RTDB ordena do mais antigo para o mais novo, precisamos inverter para mostrar o mais recente em cima.
-        entries.reverse();
-        renderJournalEntries(timeline, entries);
-    }, e => showNotification(`Erro ao carregar diário (RTDB): ${e.message}`, 'error'));
-};
-
-const sendJournalEntry = async (patient, text, author, file) => {
-    if (!text.trim() && !file) return;
-
-    let mediaData = null;
-    let uploadPromise = Promise.resolve(null);
-    
-    if (file) {
-        uploadPromise = window.uploadToCloudinary(file).then(res => {
-            showNotification(`Arquivo ${file.name} enviado para Cloudinary!`, 'success');
-            return res;
-        }).catch(error => {
-            showNotification(`Falha ao carregar arquivo: ${error.message}`, 'error');
-            return null;
-        });
-    }
-
-    mediaData = await uploadPromise;
-
-    if (!text.trim() && !mediaData) return;
-    
-    const entryData = {
-        text: text.trim(),
-        author: author,
-        isAI: author.includes('IA'),
-        timestamp: new Date().toISOString(), // Usamos ISO String para o RTDB
-        media: mediaData
-    };
-
-    try {
-        // RTDB ADAPTADO: Usando .push() para criar um novo nó de entrada
-        await db.ref(getJournalCollectionPath(patient.id)).push(entryData);
-    } catch (e) {
-        showNotification(`Erro ao enviar entrada (RTDB): ${e.message}`, 'error');
-    }
-};
-
-const handleAIRequest = async (patient) => {
-    const askAiBtn = document.getElementById('ask-ai-btn');
-    askAiBtn.disabled = true;
-    askAiBtn.innerHTML = "<i class='bx bx-loader-alt bx-spin text-xl mr-2'></i> IA Pensando...";
-    
-    try {
-        // 1. Obter as diretrizes do BRAIN (RTDB ADAPTADO)
-        const brainRef = db.ref(getAdminCollectionPath(currentUser.uid, 'aiConfig') + '/directives');
-        const brainSnap = await brainRef.once('value');
-        const directives = brainSnap.exists() ? brainSnap.val().promptDirectives : 'Atuar como assistente padrão de clínica odontológica.';
-        
-        // 2. Personalizar o Prompt de Sistema
-        const systemPrompt = directives
-            .replace(/Variável de Tratamento: \[TIPO\]/, `Variável de Tratamento: ${patient.treatmentType || 'Geral'}`)
-            .replace(/Meta: \[META\]/, `Meta: ${patient.treatmentGoal || 'N/A'}`);
-        
-        // 3. Montar a Mensagem do Usuário (Contexto)
-        const userMessage = `Você é o assistente do Dr(a). ${currentUser.email}. O paciente ${patient.name} com tratamento "${patient.treatmentType}" e meta "${patient.treatmentGoal}" acaba de solicitar uma orientação/status. Responda-o com base nas diretrizes. Use um tom encorajador e profissional.`;
-
-        // 4. CHAMA A FUNÇÃO REAL DA API
-        const geminiResponseText = await window.callGeminiAPI(systemPrompt, userMessage);
-        
-        // 5. Enviar a resposta da IA para o Diário
-        sendJournalEntry(patient, geminiResponseText, 'Assistente IA', null);
-
-    } catch (e) {
-        showNotification(`Erro na solicitação de IA: ${e.message}`, 'error');
-        console.error("Erro na solicitação de IA:", e);
-    } finally {
-        askAiBtn.disabled = false;
-        askAiBtn.innerHTML = "<i class='bx bxs-brain text-xl mr-2'></i> Pedir Ajuda à IA";
-    }
-};
-
-
-const renderJournalEntries = (container, entries) => {
-    container.innerHTML = entries.map(entry => {
-        const isDentist = entry.author === 'Dentista';
-        const isAI = entry.isAI;
-        const entryClass = isDentist ? 'entry-dentist' : (isAI ? 'entry-ai' : 'entry-patient');
-        
-        const mediaHtml = entry.media ? `
-            <div class="mt-2 p-1 bg-white rounded border border-gray-300 text-xs flex items-center justify-between">
-                <i class='bx bx-image text-base mr-1 text-indigo-600'></i>
-                <span>${formatFileName(entry.media.name)}</span>
-                <a href="${entry.media.url}" target="_blank" class="text-indigo-600 hover:underline ml-2">Ver</a>
-            </div>
-        ` : '';
-
-        return `
-            <div class="journal-entry ${entryClass}">
-                <div class="flex justify-between items-center mb-1">
-                    <span class="text-xs font-semibold ${isDentist ? 'text-indigo-700' : (isAI ? 'text-cyan-700' : 'text-gray-700')}">
-                        ${entry.author}
-                    </span>
-                    <span class="text-xs text-gray-500">
-                        ${entry.timestamp ? formatDateTime(entry.timestamp.toISOString()) : 'Carregando...'}
-                    </span>
-                </div>
-                <p class="text-gray-800 text-sm whitespace-pre-wrap">${entry.text}</p>
-                ${mediaHtml}
-            </div>
-        `;
-    }).join('');
-};
-
-
-// --- 3. GESTÃO FINANCEIRA (INCLUINDO ESTOQUE/MATERIAIS) ---
-const renderFinancialManager = (container) => {
-    container.innerHTML = `
-        <div class="p-8 bg-white shadow-2xl rounded-2xl border border-indigo-100">
-            <h2 class="text-3xl font-extrabold text-indigo-800 mb-8 flex items-center">
-                <i class='bx bxs-wallet text-3xl mr-3 text-indigo-600'></i> Gestão Financeira e Estoque
-            </h2>
-            
-            <div class="flex border-b border-gray-200 mb-6">
-                <button data-tab="stock" class="p-3 text-sm font-medium border-b-2 border-indigo-600 text-indigo-700">Inventário de Materiais</button>
-                <button data-tab="receivable" class="p-3 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700">Contas a Receber</button>
-                <button data-tab="expense" class="p-3 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700">Despesas</button>
-            </div>
-
-            <div id="financial-tab-content">
-                </div>
-        </div>
-    `;
-
-    const tabContentContainer = document.getElementById('financial-tab-content');
-    
-    // Configura listeners para troca de abas
-    document.querySelectorAll('[data-tab]').forEach(tabBtn => {
-        tabBtn.addEventListener('click', () => {
-            document.querySelectorAll('[data-tab]').forEach(btn => {
-                btn.classList.remove('border-indigo-600', 'text-indigo-700');
-                btn.classList.add('border-transparent', 'text-gray-500', 'hover:border-gray-300', 'hover:text-gray-700');
-            });
-            tabBtn.classList.add('border-indigo-600', 'text-indigo-700');
-            tabBtn.classList.remove('border-transparent', 'text-gray-500', 'hover:border-gray-300', 'hover:text-gray-700');
-
-            renderFinancialTab(tabBtn.dataset.tab, tabContentContainer);
-        });
-    });
-
-    // Renderiza a aba de estoque por padrão
-    renderFinancialTab('stock', tabContentContainer);
-};
-
-// Nova função para gerenciar a renderização interna da aba Financeiro
-const renderFinancialTab = (tab, container) => {
-    container.innerHTML = ''; // Limpa o container antes de carregar
-
-    if (tab === 'stock') {
-        container.innerHTML = `
-            <div class="flex justify-between items-center mb-6">
-                <h3 class="text-xl font-semibold text-gray-700">Inventário de Materiais</h3>
-                <button id="add-stock-btn" class="py-2 px-4 bg-green-600 hover:bg-green-700 text-white font-bold rounded-lg transition duration-200 shadow-md flex items-center justify-center">
-                    <i class='bx bx-plus-circle text-xl mr-2'></i> Novo Item
-                </button>
-            </div>
-            <div class="overflow-x-auto bg-gray-50 rounded-xl shadow-inner border border-gray-200">
-                <table class="min-w-full divide-y divide-gray-200">
-                    <thead class="bg-gray-200">
-                        <tr>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Material</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Qtde</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Custo Médio</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Fornecedor</th>
-                            <th class="px-6 py-3 text-right text-xs font-bold text-gray-600 uppercase">Ações</th>
-                        </tr>
-                    </thead>
-                    <tbody id="stock-table-body" class="bg-white divide-y divide-gray-200">
-                        <tr><td colspan="5" class="px-6 py-4 text-center text-gray-500 italic">Carregando estoque...</td></tr>
-                    </tbody>
-                </table>
-            </div>
-        `;
-        document.getElementById('add-stock-btn').addEventListener('click', () => openStockFormModal());
-        loadStock();
-
-    } else if (tab === 'receivable') {
-        container.innerHTML = `
-            <div class="flex justify-between items-center mb-6">
-                <h3 class="text-xl font-semibold text-gray-700">Contas a Receber</h3>
-                <button id="add-receivable-btn" class="py-2 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg transition duration-200 shadow-md flex items-center justify-center">
-                    <i class='bx bx-plus-circle text-xl mr-2'></i> Registrar Serviço
-                </button>
-            </div>
-
-            <div class="grid grid-cols-3 gap-4 mb-6">
-                <div class="p-4 bg-green-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Total a Receber</p><p class="text-2xl font-bold text-green-800" id="total-receivable">${formatCurrency(0)}</p></div>
-                <div class="p-4 bg-yellow-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Recebido no Mês</p><p class="text-2xl font-bold text-yellow-800" id="received-this-month">${formatCurrency(0)}</p></div>
-                <div class="p-4 bg-gray-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Contas Abertas</p><p class="text-2xl font-bold text-gray-800" id="open-receivable-count">0</p></div>
-            </div>
-
-            <div class="overflow-x-auto bg-gray-50 rounded-xl shadow-inner border border-gray-200">
-                <table class="min-w-full divide-y divide-gray-200">
-                    <thead class="bg-gray-200">
-                        <tr>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Paciente</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Vencimento</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Descrição</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Valor</th>
-                            <th class="px-6 py-3 text-right text-xs font-bold text-gray-600 uppercase">Status/Ações</th>
-                        </tr>
-                    </thead>
-                    <tbody id="receivable-table-body" class="bg-white divide-y divide-gray-200">
-                        <tr><td colspan="5" class="px-6 py-4 text-center text-gray-500 italic">Carregando contas a receber...</td></tr>
-                    </tbody>
-                </table>
-            </div>
-        `;
-        document.getElementById('add-receivable-btn').addEventListener('click', () => openReceivableFormModal());
-        loadReceivable();
-
-    } else if (tab === 'expense') {
-        container.innerHTML = `
-            <div class="flex justify-between items-center mb-6">
-                <h3 class="text-xl font-semibold text-gray-700">Registro de Despesas (Contas a Pagar)</h3>
-                <button id="add-expense-btn" class="py-2 px-4 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg transition duration-200 shadow-md flex items-center justify-center">
-                    <i class='bx bx-minus-circle text-xl mr-2'></i> Registrar Despesa
-                </button>
-            </div>
-
-            <div class="grid grid-cols-3 gap-4 mb-6">
-                <div class="p-4 bg-red-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Total Despesas Abertas</p><p class="text-2xl font-bold text-red-800" id="total-expense-open">${formatCurrency(0)}</p></div>
-                <div class="p-4 bg-green-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Próximo Vencimento</p><p class="text-2xl font-bold text-green-800" id="next-due-date">N/A</p></div>
-                <div class="p-4 bg-gray-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Total Pago no Mês</p><p class="text-2xl font-bold text-gray-800" id="paid-this-month">${formatCurrency(0)}</p></div>
-            </div>
-
-            <div class="overflow-x-auto bg-gray-50 rounded-xl shadow-inner border border-gray-200">
-                <table class="min-w-full divide-y divide-gray-200">
-                    <thead class="bg-gray-200">
-                        <tr>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Vencimento</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Fornecedor</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Nota/Ref</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Valor</th>
-                            <th class="px-6 py-3 text-right text-xs font-bold text-gray-600 uppercase">Status/Ações</th>
-                        </tr>
-                    </thead>
-                    <tbody id="expense-table-body" class="bg-white divide-y divide-gray-200">
-                        <tr><td colspan="5" class="px-6 py-4 text-center text-gray-500 italic">Carregando despesas...</td></tr>
-                    </tbody>
-                </table>
-            </div>
-        `;
-        document.getElementById('add-expense-btn').addEventListener('click', () => openExpenseFormModal());
-        loadExpenses();
-    }
-};
-
-// Nova função para gerenciar a renderização interna da aba Financeiro
-const loadPatientServiceHistory = (patientId) => {
-    const historyContainer = document.getElementById('patient-service-history');
-    if (!historyContainer) return;
-    
-    // Filtra as contas a receber pelo patientId
-    const receivableRef = db.ref(getReceivablePath(currentUser.uid)).orderByChild('patientId').equalTo(patientId);
-
-    receivableRef.once('value', async (snapshot) => {
-        const servicesObject = snapshot.val();
-        let serviceHistoryHTML = '';
-
-        if (servicesObject) {
-            const servicesList = Object.keys(servicesObject).map(key => ({ id: key, ...servicesObject[key] }));
-            
-            for (const service of servicesList) {
-                // Carregar materiais consumidos para cada serviço
-                const materialsRef = db.ref(getReceivableMaterialsPath(service.id));
-                const materialsSnapshot = await materialsRef.once('value');
-                const materialsObject = materialsSnapshot.val();
-                let materialsHTML = '';
-                let serviceCost = 0; // Custo de materiais para este serviço
-
-                if (materialsObject) {
-                    const materialsList = Object.keys(materialsObject).map(key => materialsObject[key]);
-                    
-                    materialsHTML = materialsList.map(m => {
-                        // Usamos o cache de estoque em memória para obter o custo
-                        const stockItem = stockItems.find(i => i.id === m.materialId);
-                        const costPerUnit = stockItem ? stockItem.cost : 0;
-                        const totalItemCost = costPerUnit * m.quantityUsed;
-                        serviceCost += totalItemCost;
-                        
-                        return `<li class="ml-4 text-xs text-gray-600">
-                            - ${m.quantityUsed} ${m.unit} de ${m.name} (Custo: ${formatCurrency(totalItemCost)})
-                        </li>`;
-                    }).join('');
-                }
-                
-                const statusColor = service.status === 'Recebido' ? 'text-green-600' : (service.status === 'Atrasado' ? 'text-red-600' : 'text-yellow-600');
-                
-                serviceHistoryHTML += `
-                    <div class="mb-4 p-3 border rounded-lg shadow-sm ${service.status === 'Recebido' ? 'bg-green-50' : 'bg-gray-50'}">
-                        <div class="flex justify-between items-center">
                             <span class="font-semibold text-sm text-gray-800">Serviço: ${formatCurrency(service.amount)} (${service.description})</span>
                             <span class="text-xs ${statusColor} font-bold">${service.status}</span>
                         </div>
@@ -3904,579 +1768,1061 @@ const renderFinancialTab = (tab, container) => {
     }
 };
 
-// Nova função para gerenciar a renderização interna da aba Financeiro
-const loadPatientServiceHistory = (patientId) => {
-    const historyContainer = document.getElementById('patient-service-history');
-    if (!historyContainer) return;
+// --- Funções CRUD Estoque ---
+
+let stockItems = [];
+
+const loadStock = () => {
+    if (!currentUser) return;
+
+    const stockRef = db.ref(getStockCollectionPath(currentUser.uid));
     
-    // Filtra as contas a receber pelo patientId
-    const receivableRef = db.ref(getReceivablePath(currentUser.uid)).orderByChild('patientId').equalTo(patientId);
-
-    receivableRef.once('value', async (snapshot) => {
-        const servicesObject = snapshot.val();
-        let serviceHistoryHTML = '';
-
-        if (servicesObject) {
-            const servicesList = Object.keys(servicesObject).map(key => ({ id: key, ...servicesObject[key] }));
-            
-            for (const service of servicesList) {
-                // Carregar materiais consumidos para cada serviço
-                const materialsRef = db.ref(getReceivableMaterialsPath(service.id));
-                const materialsSnapshot = await materialsRef.once('value');
-                const materialsObject = materialsSnapshot.val();
-                let materialsHTML = '';
-                let serviceCost = 0; // Custo de materiais para este serviço
-
-                if (materialsObject) {
-                    const materialsList = Object.keys(materialsObject).map(key => materialsObject[key]);
-                    
-                    materialsHTML = materialsList.map(m => {
-                        // Usamos o cache de estoque em memória para obter o custo
-                        const stockItem = stockItems.find(i => i.id === m.materialId);
-                        const costPerUnit = stockItem ? stockItem.cost : 0;
-                        const totalItemCost = costPerUnit * m.quantityUsed;
-                        serviceCost += totalItemCost;
-                        
-                        return `<li class="ml-4 text-xs text-gray-600">
-                            - ${m.quantityUsed} ${m.unit} de ${m.name} (Custo: ${formatCurrency(totalItemCost)})
-                        </li>`;
-                    }).join('');
-                }
-                
-                const statusColor = service.status === 'Recebido' ? 'text-green-600' : (service.status === 'Atrasado' ? 'text-red-600' : 'text-yellow-600');
-                
-                serviceHistoryHTML += `
-                    <div class="mb-4 p-3 border rounded-lg shadow-sm ${service.status === 'Recebido' ? 'bg-green-50' : 'bg-gray-50'}">
-                        <div class="flex justify-between items-center">
-                            <span class="font-semibold text-sm text-gray-800">Serviço: ${formatCurrency(service.amount)} (${service.description})</span>
-                            <span class="text-xs ${statusColor} font-bold">${service.status}</span>
-                        </div>
-                        <p class="text-xs text-gray-500 mb-2">Vencimento: ${service.dueDate}</p>
-                        
-                        <h5 class="text-xs font-semibold mt-2 text-indigo-700">Materiais (Custo total: ${formatCurrency(serviceCost)}):</h5>
-                        <ul class="list-disc list-inside">
-                            ${materialsHTML || '<li class="ml-4 italic text-gray-500 text-xs">Nenhum material registrado.</li>'}
-                        </ul>
-                    </div>
-                `;
-            }
-        }
+    stockRef.on('value', snapshot => {
+        const itemsObject = snapshot.val();
+        const itemsList = [];
         
-        historyContainer.innerHTML = serviceHistoryHTML || '<p class="text-center text-gray-500 italic">Nenhum serviço financeiro registrado para este paciente.</p>';
-        
-    }).catch(e => {
-        historyContainer.innerHTML = `<p class="text-red-500">Erro ao carregar histórico: ${e.message}</p>`;
-        console.error("Erro ao carregar histórico financeiro do paciente:", e);
-    });
-};
-
-
-const setupJournalListeners = (patient) => {
-    const timeline = document.getElementById('journal-timeline');
-    const responseInput = document.getElementById('dentist-response-input');
-    const sendBtn = document.getElementById('send-response-btn');
-    const askAiBtn = document.getElementById('ask-ai-btn');
-    const mediaBtn = document.getElementById('attach-media-btn');
-    const mediaInput = document.getElementById('media-input');
-    const fileNameDisplay = document.getElementById('file-name-display');
-    
-    let currentFile = null;
-
-    mediaInput.addEventListener('change', (e) => {
-        currentFile = e.target.files[0] || null;
-        fileNameDisplay.textContent = currentFile ? formatFileName(currentFile.name) : '';
-    });
-    mediaBtn.addEventListener('click', () => mediaInput.click());
-
-    sendBtn.addEventListener('click', () => {
-        sendJournalEntry(patient, responseInput.value, 'Dentista', currentFile);
-        responseInput.value = '';
-        currentFile = null;
-        fileNameDisplay.textContent = '';
-    });
-    
-    askAiBtn.addEventListener('click', () => handleAIRequest(patient));
-
-    // RTDB ADAPTADO: Listener para o Diário
-    const journalRef = db.ref(getJournalCollectionPath(patient.id));
-    journalRef.orderByChild('timestamp').on('value', snapshot => {
-        const entriesObject = snapshot.val();
-        const entries = [];
-        if (entriesObject) {
-            Object.keys(entriesObject).forEach(key => {
-                 // RTDB não tem um objeto Date, então usamos o new Date(ISO String)
-                entries.push({ id: key, ...entriesObject[key], timestamp: new Date(entriesObject[key].timestamp) });
+        if (itemsObject) {
+            Object.keys(itemsObject).forEach(key => {
+                itemsList.push({ id: key, ...itemsObject[key] });
             });
         }
-        // O RTDB ordena do mais antigo para o mais novo, precisamos inverter para mostrar o mais recente em cima.
-        entries.reverse();
-        renderJournalEntries(timeline, entries);
-    }, e => showNotification(`Erro ao carregar diário (RTDB): ${e.message}`, 'error'));
+        
+        stockItems = itemsList;
+        renderStockTable(itemsList);
+    }, e => showNotification(`Erro ao carregar estoque (RTDB): ${e.message}`, 'error'));
 };
 
-const sendJournalEntry = async (patient, text, author, file) => {
-    if (!text.trim() && !file) return;
+const renderStockTable = (items) => {
+    const tbody = document.getElementById('stock-table-body');
+    if (!tbody) return;
 
-    let mediaData = null;
-    let uploadPromise = Promise.resolve(null);
-    
-    if (file) {
-        uploadPromise = window.uploadToCloudinary(file).then(res => {
-            showNotification(`Arquivo ${file.name} enviado para Cloudinary!`, 'success');
-            return res;
-        }).catch(error => {
-            showNotification(`Falha ao carregar arquivo: ${error.message}`, 'error');
-            return null;
-        });
+    if (items.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="5" class="px-6 py-4 text-center text-gray-500 italic">Nenhum item de estoque cadastrado.</td></tr>`;
+        return;
     }
 
-    mediaData = await uploadPromise;
-
-    if (!text.trim() && !mediaData) return;
-    
-    const entryData = {
-        text: text.trim(),
-        author: author,
-        isAI: author.includes('IA'),
-        timestamp: new Date().toISOString(), // Usamos ISO String para o RTDB
-        media: mediaData
-    };
-
-    try {
-        // RTDB ADAPTADO: Usando .push() para criar um novo nó de entrada
-        await db.ref(getJournalCollectionPath(patient.id)).push(entryData);
-    } catch (e) {
-        showNotification(`Erro ao enviar entrada (RTDB): ${e.message}`, 'error');
-    }
-};
-
-const handleAIRequest = async (patient) => {
-    const askAiBtn = document.getElementById('ask-ai-btn');
-    askAiBtn.disabled = true;
-    askAiBtn.innerHTML = "<i class='bx bx-loader-alt bx-spin text-xl mr-2'></i> IA Pensando...";
-    
-    try {
-        // 1. Obter as diretrizes do BRAIN (RTDB ADAPTADO)
-        const brainRef = db.ref(getAdminCollectionPath(currentUser.uid, 'aiConfig') + '/directives');
-        const brainSnap = await brainRef.once('value');
-        const directives = brainSnap.exists() ? brainSnap.val().promptDirectives : 'Atuar como assistente padrão de clínica odontológica.';
-        
-        // 2. Personalizar o Prompt de Sistema
-        const systemPrompt = directives
-            .replace(/Variável de Tratamento: \[TIPO\]/, `Variável de Tratamento: ${patient.treatmentType || 'Geral'}`)
-            .replace(/Meta: \[META\]/, `Meta: ${patient.treatmentGoal || 'N/A'}`);
-        
-        // 3. Montar a Mensagem do Usuário (Contexto)
-        const userMessage = `Você é o assistente do Dr(a). ${currentUser.email}. O paciente ${patient.name} com tratamento "${patient.treatmentType}" e meta "${patient.treatmentGoal}" acaba de solicitar uma orientação/status. Responda-o com base nas diretrizes. Use um tom encorajador e profissional.`;
-
-        // 4. CHAMA A FUNÇÃO REAL DA API
-        const geminiResponseText = await window.callGeminiAPI(systemPrompt, userMessage);
-        
-        // 5. Enviar a resposta da IA para o Diário
-        sendJournalEntry(patient, geminiResponseText, 'Assistente IA', null);
-
-    } catch (e) {
-        showNotification(`Erro na solicitação de IA: ${e.message}`, 'error');
-        console.error("Erro na solicitação de IA:", e);
-    } finally {
-        askAiBtn.disabled = false;
-        askAiBtn.innerHTML = "<i class='bx bxs-brain text-xl mr-2'></i> Pedir Ajuda à IA";
-    }
-};
-
-
-const renderJournalEntries = (container, entries) => {
-    container.innerHTML = entries.map(entry => {
-        const isDentist = entry.author === 'Dentista';
-        const isAI = entry.isAI;
-        const entryClass = isDentist ? 'entry-dentist' : (isAI ? 'entry-ai' : 'entry-patient');
-        
-        const mediaHtml = entry.media ? `
-            <div class="mt-2 p-1 bg-white rounded border border-gray-300 text-xs flex items-center justify-between">
-                <i class='bx bx-image text-base mr-1 text-indigo-600'></i>
-                <span>${formatFileName(entry.media.name)}</span>
-                <a href="${entry.media.url}" target="_blank" class="text-indigo-600 hover:underline ml-2">Ver</a>
-            </div>
-        ` : '';
-
-        return `
-            <div class="journal-entry ${entryClass}">
-                <div class="flex justify-between items-center mb-1">
-                    <span class="text-xs font-semibold ${isDentist ? 'text-indigo-700' : (isAI ? 'text-cyan-700' : 'text-gray-700')}">
-                        ${entry.author}
-                    </span>
-                    <span class="text-xs text-gray-500">
-                        ${entry.timestamp ? formatDateTime(entry.timestamp.toISOString()) : 'Carregando...'}
-                    </span>
+    tbody.innerHTML = items.map(item => `
+        <tr class="hover:bg-gray-50 transition-colors">
+            <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">${item.name}</td>
+            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${item.quantity} ${item.unit}</td>
+            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${formatCurrency(item.cost)}</td>
+            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${item.supplier || 'N/A'}</td>
+            <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                <div class="flex justify-end space-x-2">
+                    <button data-action="edit" data-id="${item.id}" class="p-2 text-indigo-600 hover:bg-indigo-100 rounded-full" title="Editar">
+                        <i class='bx bxs-edit-alt text-xl'></i>
+                    </button>
+                    <button data-action="delete" data-id="${item.id}" class="p-2 text-red-600 hover:bg-red-100 rounded-full" title="Excluir">
+                        <i class='bx bxs-trash-alt text-xl'></i>
+                    </button>
                 </div>
-                <p class="text-gray-800 text-sm whitespace-pre-wrap">${entry.text}</p>
-                ${mediaHtml}
-            </div>
-        `;
-    }).join('');
+            </td>
+        </tr>
+    `).join('');
+
+    tbody.addEventListener('click', (e) => {
+        const btn = e.target.closest('button');
+        if (!btn) return;
+        const itemId = btn.dataset.id;
+        const item = items.find(i => i.id === itemId);
+
+        switch (btn.dataset.action) {
+            case 'edit': openStockFormModal(item); break;
+            case 'delete': deleteStockItem(itemId, item.name); break;
+        }
+    });
 };
 
-
-// --- 3. GESTÃO FINANCEIRA (INCLUINDO ESTOQUE/MATERIAIS) ---
-const renderFinancialManager = (container) => {
-    container.innerHTML = `
-        <div class="p-8 bg-white shadow-2xl rounded-2xl border border-indigo-100">
-            <h2 class="text-3xl font-extrabold text-indigo-800 mb-8 flex items-center">
-                <i class='bx bxs-wallet text-3xl mr-3 text-indigo-600'></i> Gestão Financeira e Estoque
-            </h2>
+const openStockFormModal = (item = null) => {
+    const isEdit = !!item;
+    const modalTitle = isEdit ? `Editar Material: ${item.name}` : 'Novo Item de Estoque';
+    
+    document.getElementById('modal-title').textContent = modalTitle;
+    document.getElementById('modal-body').innerHTML = `
+        <form id="stock-form" class="space-y-4">
+            <input type="hidden" id="item-id" value="${isEdit ? item.id : ''}">
             
-            <div class="flex border-b border-gray-200 mb-6">
-                <button data-tab="stock" class="p-3 text-sm font-medium border-b-2 border-indigo-600 text-indigo-700">Inventário de Materiais</button>
-                <button data-tab="receivable" class="p-3 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700">Contas a Receber</button>
-                <button data-tab="expense" class="p-3 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700">Despesas</button>
-            </div>
-
-            <div id="financial-tab-content">
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Nome do Material</label>
+                    <input type="text" id="item-name" value="${isEdit ? item.name : ''}" required class="w-full p-3 border border-gray-300 rounded-lg">
                 </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Fornecedor</label>
+                    <input type="text" id="item-supplier" value="${isEdit ? item.supplier : ''}" class="w-full p-3 border border-gray-300 rounded-lg">
+                </div>
+            </div>
+            
+            <div class="grid grid-cols-3 gap-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Quantidade</label>
+                    <input type="number" id="item-quantity" value="${isEdit ? item.quantity : 1}" min="0" required class="w-full p-3 border border-gray-300 rounded-lg">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Unidade</label>
+                    <select id="item-unit" required class="w-full p-3 border border-gray-300 rounded-lg">
+                        <option value="un">Unidade (un)</option>
+                        <option value="ml">Mililitros (ml)</option>
+                        <option value="g">Gramas (g)</option>
+                        <option value="cx">Caixa (cx)</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Custo Médio (R$)</label>
+                    <input type="number" step="0.01" id="item-cost" value="${isEdit ? item.cost : ''}" required class="w-full p-3 border border-gray-300 rounded-lg">
+                </div>
+            </div>
+            
+            <div class="flex justify-end space-x-3 pt-4">
+                <button type="button" id="form-cancel-btn" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg">Cancelar</button>
+                <button type="submit" class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700">${isEdit ? 'Atualizar' : 'Cadastrar'}</button>
+            </div>
+        </form>
+    `;
+    
+    if (isEdit) {
+        document.getElementById('item-unit').value = item.unit || 'un';
+    }
+
+    document.getElementById('stock-form').addEventListener('submit', saveStockItem);
+    document.getElementById('form-cancel-btn').addEventListener('click', closeModal);
+    
+    openModal(modalTitle, 'max-w-xl');
+};
+
+const saveStockItem = async (e) => {
+    e.preventDefault();
+    const isEdit = !!document.getElementById('item-id').value;
+    const itemId = document.getElementById('item-id').value;
+    
+    const itemData = {
+        id: itemId || null,
+        name: document.getElementById('item-name').value,
+        supplier: document.getElementById('item-supplier').value,
+        quantity: parseFloat(document.getElementById('item-quantity').value),
+        unit: document.getElementById('item-unit').value,
+        cost: parseFloat(document.getElementById('item-cost').value),
+        lastUpdated: new Date().toISOString()
+    };
+    
+    try {
+        const stockRef = db.ref(getStockCollectionPath(currentUser.uid));
+
+        if (isEdit) {
+            // RTDB CRUD: Update (usando .update())
+            await stockRef.child(itemId).update(itemData);
+        } else {
+            // RTDB CRUD: Create (usando .push())
+            const newRef = stockRef.push();
+            itemData.id = newRef.key;
+            await newRef.set(itemData);
+        }
+        
+        closeModal();
+        showNotification(`Item ${itemData.name} salvo com sucesso!`, 'success');
+    } catch (e) {
+        showNotification(`Erro ao salvar item (RTDB): ${e.message}`, 'error');
+        console.error("Erro ao salvar item (RTDB):", e);
+    }
+};
+
+const deleteStockItem = async (itemId, itemName) => {
+    if (!confirm(`Tem certeza que deseja excluir o item de estoque ${itemName}?`)) return;
+
+    try {
+        // RTDB CRUD: Delete (usando .remove())
+        const itemRef = db.ref(getStockCollectionPath(currentUser.uid) + '/' + itemId);
+        await itemRef.remove();
+        
+        showNotification(`Item ${itemName} excluído com sucesso!`, 'success');
+    } catch (e) {
+        showNotification(`Erro ao excluir item (RTDB): ${e.message}`, 'error');
+        console.error("Erro ao excluir item (RTDB):", e);
+    }
+};
+
+// --- Funções CRUD Contas a Receber (Receivable) ---
+let receivables = [];
+let receivableMaterialsCache = {}; // Cache para materiais usados por conta a receber
+
+// NOVO MODAL: Para gerenciar os materiais vinculados ao serviço
+const openMaterialConsumptionModal = (receivable) => {
+    const modalTitle = `Materiais Utilizados: ${receivable.patientName}`;
+    
+    // Tenta carregar os materiais consumidos para este serviço
+    const materialsUsed = receivableMaterialsCache[receivable.id] || [];
+    
+    const materialsListHTML = materialsUsed.length > 0 ? materialsUsed.map(m => `
+        <li class="flex justify-between items-center py-2 border-b">
+            <span>${m.name}</span>
+            <span class="font-semibold">${m.quantityUsed} ${m.unit}</span>
+        </li>
+    `).join('') : '<p class="italic text-gray-500">Nenhum material registrado. Adicione um abaixo.</p>';
+    
+    // Opções de estoque para adicionar
+    const stockOptions = stockItems.map(item => 
+        `<option value="${item.id}" data-unit="${item.unit}">
+            ${item.name} (${item.quantity} ${item.unit} em estoque)
+        </option>`
+    ).join('');
+
+    document.getElementById('modal-title').textContent = modalTitle;
+    document.getElementById('modal-body').innerHTML = `
+        <div class="space-y-4">
+            <h4 class="text-lg font-bold text-indigo-700">Materiais Registrados:</h4>
+            <ul class="bg-gray-50 p-4 rounded-lg list-none divide-y" id="materials-used-list">
+                ${materialsListHTML}
+            </ul>
+
+            <h4 class="text-lg font-bold text-indigo-700 mt-6">Adicionar Novo Material:</h4>
+            <form id="add-material-form" class="space-y-3 p-4 border rounded-lg bg-white">
+                <input type="hidden" id="consumption-receivable-id" value="${receivable.id}">
+                <div class="grid grid-cols-3 gap-3">
+                    <div class="col-span-2">
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Material</label>
+                        <select id="consumption-material-id" required class="w-full p-3 border border-gray-300 rounded-lg">
+                            <option value="">Selecione o Material...</option>
+                            ${stockOptions}
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Qtde Consumida</label>
+                        <input type="number" step="any" min="0" id="consumption-quantity" required class="w-full p-3 border border-gray-300 rounded-lg" placeholder="Qtde">
+                    </div>
+                </div>
+                <button type="submit" class="w-full py-2 bg-green-600 hover:bg-green-700 text-white font-semibold rounded-lg transition duration-200">
+                    Registrar Consumo
+                </button>
+            </form>
+        </div>
+        <div class="flex justify-end pt-4">
+            <button type="button" id="close-consumption-modal" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg">Fechar</button>
         </div>
     `;
 
-    const tabContentContainer = document.getElementById('financial-tab-content');
+    // Carregar o cache inicial e adicionar listeners
+    loadReceivableMaterials(receivable.id);
+    document.getElementById('add-material-form').addEventListener('submit', saveReceivableMaterial);
+    document.getElementById('close-consumption-modal').addEventListener('click', closeModal);
     
-    // Configura listeners para troca de abas
-    document.querySelectorAll('[data-tab]').forEach(tabBtn => {
-        tabBtn.addEventListener('click', () => {
-            document.querySelectorAll('[data-tab]').forEach(btn => {
-                btn.classList.remove('border-indigo-600', 'text-indigo-700');
-                btn.classList.add('border-transparent', 'text-gray-500', 'hover:border-gray-300', 'hover:text-gray-700');
-            });
-            tabBtn.classList.add('border-indigo-600', 'text-indigo-700');
-            tabBtn.classList.remove('border-transparent', 'text-gray-500', 'hover:border-gray-300', 'hover:text-gray-700');
-
-            renderFinancialTab(tabBtn.dataset.tab, tabContentContainer);
-        });
-    });
-
-    // Renderiza a aba de estoque por padrão
-    renderFinancialTab('stock', tabContentContainer);
+    openModal(modalTitle, 'max-w-xl');
 };
 
-// Nova função para gerenciar a renderização interna da aba Financeiro
-const renderFinancialTab = (tab, container) => {
-    container.innerHTML = ''; // Limpa o container antes de carregar
+const loadReceivableMaterials = (receivableId) => {
+    // Listener para carregar e atualizar a lista de materiais em tempo real
+    const materialsRef = db.ref(getReceivableMaterialsPath(receivableId));
+    
+    materialsRef.on('value', snapshot => {
+        const materialsObject = snapshot.val();
+        let materialsList = [];
+        
+        if (materialsObject) {
+            Object.keys(materialsObject).forEach(key => {
+                materialsList.push({ id: key, ...materialsObject[key] });
+            });
+        }
+        
+        receivableMaterialsCache[receivableId] = materialsList;
+        
+        // Atualiza a UI do modal se ele estiver aberto
+        const listContainer = document.getElementById('materials-used-list');
+        if (listContainer) {
+            listContainer.innerHTML = materialsList.length > 0 ? materialsList.map(m => `
+                <li class="flex justify-between items-center py-2 border-b">
+                    <span>${m.name}</span>
+                    <span class="font-semibold">${m.quantityUsed} ${m.unit}</span>
+                </li>
+            `).join('') : '<p class="italic text-gray-500">Nenhum material registrado. Adicione um abaixo.</p>';
+        }
+    });
+};
 
-    if (tab === 'stock') {
-        container.innerHTML = `
-            <div class="flex justify-between items-center mb-6">
-                <h3 class="text-xl font-semibold text-gray-700">Inventário de Materiais</h3>
-                <button id="add-stock-btn" class="py-2 px-4 bg-green-600 hover:bg-green-700 text-white font-bold rounded-lg transition duration-200 shadow-md flex items-center justify-center">
-                    <i class='bx bx-plus-circle text-xl mr-2'></i> Novo Item
-                </button>
-            </div>
-            <div class="overflow-x-auto bg-gray-50 rounded-xl shadow-inner border border-gray-200">
-                <table class="min-w-full divide-y divide-gray-200">
-                    <thead class="bg-gray-200">
-                        <tr>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Material</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Qtde</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Custo Médio</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Fornecedor</th>
-                            <th class="px-6 py-3 text-right text-xs font-bold text-gray-600 uppercase">Ações</th>
-                        </tr>
-                    </thead>
-                    <tbody id="stock-table-body" class="bg-white divide-y divide-gray-200">
-                        <tr><td colspan="5" class="px-6 py-4 text-center text-gray-500 italic">Carregando estoque...</td></tr>
-                    </tbody>
-                </table>
-            </div>
-        `;
-        document.getElementById('add-stock-btn').addEventListener('click', () => openStockFormModal());
-        loadStock();
-
-    } else if (tab === 'receivable') {
-        container.innerHTML = `
-            <div class="flex justify-between items-center mb-6">
-                <h3 class="text-xl font-semibold text-gray-700">Contas a Receber</h3>
-                <button id="add-receivable-btn" class="py-2 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg transition duration-200 shadow-md flex items-center justify-center">
-                    <i class='bx bx-plus-circle text-xl mr-2'></i> Registrar Serviço
-                </button>
-            </div>
-
-            <div class="grid grid-cols-3 gap-4 mb-6">
-                <div class="p-4 bg-green-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Total a Receber</p><p class="text-2xl font-bold text-green-800" id="total-receivable">${formatCurrency(0)}</p></div>
-                <div class="p-4 bg-yellow-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Recebido no Mês</p><p class="text-2xl font-bold text-yellow-800" id="received-this-month">${formatCurrency(0)}</p></div>
-                <div class="p-4 bg-gray-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Contas Abertas</p><p class="text-2xl font-bold text-gray-800" id="open-receivable-count">0</p></div>
-            </div>
-
-            <div class="overflow-x-auto bg-gray-50 rounded-xl shadow-inner border border-gray-200">
-                <table class="min-w-full divide-y divide-gray-200">
-                    <thead class="bg-gray-200">
-                        <tr>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Paciente</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Vencimento</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Descrição</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Valor</th>
-                            <th class="px-6 py-3 text-right text-xs font-bold text-gray-600 uppercase">Status/Ações</th>
-                        </tr>
-                    </thead>
-                    <tbody id="receivable-table-body" class="bg-white divide-y divide-gray-200">
-                        <tr><td colspan="5" class="px-6 py-4 text-center text-gray-500 italic">Carregando contas a receber...</td></tr>
-                    </tbody>
-                </table>
-            </div>
-        `;
-        document.getElementById('add-receivable-btn').addEventListener('click', () => openReceivableFormModal());
-        loadReceivable();
-
-    } else if (tab === 'expense') {
-        container.innerHTML = `
-            <div class="flex justify-between items-center mb-6">
-                <h3 class="text-xl font-semibold text-gray-700">Registro de Despesas (Contas a Pagar)</h3>
-                <button id="add-expense-btn" class="py-2 px-4 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg transition duration-200 shadow-md flex items-center justify-center">
-                    <i class='bx bx-minus-circle text-xl mr-2'></i> Registrar Despesa
-                </button>
-            </div>
-
-            <div class="grid grid-cols-3 gap-4 mb-6">
-                <div class="p-4 bg-red-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Total Despesas Abertas</p><p class="text-2xl font-bold text-red-800" id="total-expense-open">${formatCurrency(0)}</p></div>
-                <div class="p-4 bg-green-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Próximo Vencimento</p><p class="text-2xl font-bold text-green-800" id="next-due-date">N/A</p></div>
-                <div class="p-4 bg-gray-100 rounded-lg shadow-md"><p class="text-sm text-gray-600">Total Pago no Mês</p><p class="text-2xl font-bold text-gray-800" id="paid-this-month">${formatCurrency(0)}</p></div>
-            </div>
-
-            <div class="overflow-x-auto bg-gray-50 rounded-xl shadow-inner border border-gray-200">
-                <table class="min-w-full divide-y divide-gray-200">
-                    <thead class="bg-gray-200">
-                        <tr>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Vencimento</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Fornecedor</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Nota/Ref</th>
-                            <th class="px-6 py-3 text-left text-xs font-bold text-gray-600 uppercase">Valor</th>
-                            <th class="px-6 py-3 text-right text-xs font-bold text-gray-600 uppercase">Status/Ações</th>
-                        </tr>
-                    </thead>
-                    <tbody id="expense-table-body" class="bg-white divide-y divide-gray-200">
-                        <tr><td colspan="5" class="px-6 py-4 text-center text-gray-500 italic">Carregando despesas...</td></tr>
-                    </tbody>
-                </table>
-            </div>
-        `;
-        document.getElementById('add-expense-btn').addEventListener('click', () => openExpenseFormModal());
-        loadExpenses();
+const saveReceivableMaterial = async (e) => {
+    e.preventDefault();
+    const receivableId = document.getElementById('consumption-receivable-id').value;
+    const materialSelect = document.getElementById('consumption-material-id');
+    const materialId = materialSelect.value;
+    const quantityUsed = parseFloat(document.getElementById('consumption-quantity').value);
+    
+    if (!materialId || quantityUsed <= 0) return;
+    
+    const selectedItem = stockItems.find(i => i.id === materialId);
+    if (!selectedItem) {
+        showNotification("Material não encontrado no estoque.", "error");
+        return;
+    }
+    
+    const consumptionData = {
+        materialId: materialId,
+        name: selectedItem.name,
+        unit: selectedItem.unit,
+        quantityUsed: quantityUsed,
+        registeredAt: new Date().toISOString()
+    };
+    
+    try {
+        // Salva o consumo no nó da Conta a Receber
+        await db.ref(getReceivableMaterialsPath(receivableId)).push(consumptionData);
+        
+        showNotification(`Consumo de ${quantityUsed} ${selectedItem.unit} de ${selectedItem.name} registrado!`, 'success');
+        
+        // Limpa o formulário de consumo
+        document.getElementById('consumption-quantity').value = '';
+        materialSelect.value = '';
+        
+    } catch (e) {
+        showNotification(`Erro ao registrar consumo (RTDB): ${e.message}`, 'error');
+        console.error("Erro ao salvar consumo (RTDB):", e);
     }
 };
 
-// Nova função para gerenciar a renderização interna da aba Financeiro
-const loadPatientServiceHistory = (patientId) => {
-    const historyContainer = document.getElementById('patient-service-history');
-    if (!historyContainer) return;
+const openReceivableFormModal = (item = null) => {
+    const isEdit = !!item;
+    const modalTitle = isEdit ? `Editar Conta a Receber` : 'Registrar Serviço (Contas a Receber)';
     
-    // Filtra as contas a receber pelo patientId
-    const receivableRef = db.ref(getReceivablePath(currentUser.uid)).orderByChild('patientId').equalTo(patientId);
+    // Gerar a lista de pacientes para o SELECT
+    const patientOptions = allPatients.map(p => 
+        `<option value="${p.id}" ${item && item.patientId === p.id ? 'selected' : ''}>${p.name} (${p.treatmentType})</option>`
+    ).join('');
+    
+    // Botão de materiais só aparece na edição ou após o cadastro inicial
+    const materialsButton = isEdit ? `
+        <button type="button" id="manage-materials-btn" data-receivable-id="${item.id}" class="py-2 px-4 bg-yellow-500 hover:bg-yellow-600 text-white font-bold rounded-lg transition duration-200 shadow-md">
+            <i class='bx bx-sitemap mr-2'></i> Gerenciar Materiais
+        </button>
+    ` : '';
 
-    receivableRef.once('value', async (snapshot) => {
-        const servicesObject = snapshot.val();
-        let serviceHistoryHTML = '';
-
-        if (servicesObject) {
-            const servicesList = Object.keys(servicesObject).map(key => ({ id: key, ...servicesObject[key] }));
+    document.getElementById('modal-title').textContent = modalTitle;
+    document.getElementById('modal-body').innerHTML = `
+        <form id="receivable-form" class="space-y-4">
+            <input type="hidden" id="receivable-id" value="${isEdit ? item.id : ''}">
             
-            for (const service of servicesList) {
-                // Carregar materiais consumidos para cada serviço
-                const materialsRef = db.ref(getReceivableMaterialsPath(service.id));
-                const materialsSnapshot = await materialsRef.once('value');
-                const materialsObject = materialsSnapshot.val();
-                let materialsHTML = '';
-                let serviceCost = 0; // Custo de materiais para este serviço
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Paciente</label>
+                    <select id="receivable-patient-id" required class="w-full p-3 border border-gray-300 rounded-lg">
+                        <option value="">Selecione o Paciente...</option>
+                        ${patientOptions}
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Valor do Serviço (R$)</label>
+                    <input type="number" step="0.01" id="receivable-amount" value="${isEdit ? item.amount : ''}" required class="w-full p-3 border border-gray-300 rounded-lg">
+                </div>
+            </div>
+            
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Vencimento</label>
+                    <input type="date" id="receivable-due-date" value="${isEdit ? item.dueDate : new Date().toISOString().substring(0, 10)}" required class="w-full p-3 border border-gray-300 rounded-lg">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Status</label>
+                    <select id="receivable-status" required class="w-full p-3 border border-gray-300 rounded-lg">
+                        <option value="Aberto">Aberto</option>
+                        <option value="Recebido" ${isEdit && item.status === 'Recebido' ? 'selected' : ''}>Recebido</option>
+                        <option value="Atrasado" ${isEdit && item.status === 'Atrasado' ? 'selected' : ''}>Atrasado</option>
+                    </select>
+                </div>
+            </div>
+            
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Descrição Detalhada do Serviço</label>
+                <textarea id="receivable-description" rows="2" required class="w-full p-3 border border-gray-300 rounded-lg resize-none">${isEdit ? item.description : ''}</textarea>
+            </div>
+            
+            <div class="flex justify-between items-center pt-4">
+                ${materialsButton}
+                <div class="flex space-x-3">
+                    <button type="button" id="form-cancel-btn" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg">Cancelar</button>
+                    <button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700">${isEdit ? 'Atualizar' : 'Registrar Serviço'}</button>
+                </div>
+            </div>
+        </form>
+    `;
 
-                if (materialsObject) {
-                    const materialsList = Object.keys(materialsObject).map(key => materialsObject[key]);
-                    
-                    materialsHTML = materialsList.map(m => {
-                        // Usamos o cache de estoque em memória para obter o custo
-                        const stockItem = stockItems.find(i => i.id === m.materialId);
-                        const costPerUnit = stockItem ? stockItem.cost : 0;
-                        const totalItemCost = costPerUnit * m.quantityUsed;
-                        serviceCost += totalItemCost;
-                        
-                        return `<li class="ml-4 text-xs text-gray-600">
-                            - ${m.quantityUsed} ${m.unit} de ${m.name} (Custo: ${formatCurrency(totalItemCost)})
-                        </li>`;
-                    }).join('');
+    document.getElementById('receivable-form').addEventListener('submit', saveReceivable);
+    document.getElementById('form-cancel-btn').addEventListener('click', closeModal);
+    
+    if (isEdit) {
+        document.getElementById('manage-materials-btn').addEventListener('click', (e) => {
+            e.stopPropagation();
+            openMaterialConsumptionModal(item);
+        });
+    }
+    
+    openModal(modalTitle, 'max-w-2xl');
+};
+
+const saveReceivable = async (e) => {
+    e.preventDefault();
+    const isEdit = !!document.getElementById('receivable-id').value;
+    const receivableId = document.getElementById('receivable-id').value;
+    const patientId = document.getElementById('receivable-patient-id').value;
+    
+    // Busca o nome do paciente no array em memória
+    const patientName = allPatients.find(p => p.id === patientId)?.name || "Paciente Removido"; 
+
+    const itemData = {
+        id: receivableId || null,
+        patientId: patientId,
+        patientName: patientName,
+        amount: parseFloat(document.getElementById('receivable-amount').value),
+        dueDate: document.getElementById('receivable-due-date').value,
+        description: document.getElementById('receivable-description').value,
+        status: document.getElementById('receivable-status').value,
+        registeredAt: new Date().toISOString()
+    };
+    
+    try {
+        const receivableRef = db.ref(getReceivablePath(currentUser.uid));
+
+        if (isEdit) {
+            await receivableRef.child(receivableId).update(itemData);
+        } else {
+            const newRef = receivableRef.push();
+            itemData.id = newRef.key;
+            await newRef.set(itemData);
+            // Se for um novo registro, reabre o modal no modo edição para gerenciar materiais
+            closeModal();
+            openReceivableFormModal(itemData);
+        }
+        
+        if (isEdit) closeModal();
+        showNotification(`Conta a Receber (${patientName}) registrada com sucesso!`, 'success');
+    } catch (e) {
+        showNotification(`Erro ao salvar Conta a Receber (RTDB): ${e.message}`, 'error');
+        console.error("Erro ao salvar Conta a Receber (RTDB):", e);
+    }
+};
+
+const loadReceivable = () => {
+    if (!currentUser) return;
+    
+    const receivableRef = db.ref(getReceivablePath(currentUser.uid));
+
+    receivableRef.on('value', snapshot => {
+        const itemsObject = snapshot.val();
+        let itemsList = [];
+        let totalReceivable = 0;
+        let receivedThisMonth = 0;
+        let openCount = 0;
+
+        if (itemsObject) {
+            Object.keys(itemsObject).forEach(key => {
+                const item = { id: key, ...itemsObject[key] };
+                
+                if (item.status === 'Aberto' || item.status === 'Atrasado') {
+                    totalReceivable += item.amount;
+                    openCount++;
+                }
+
+                const today = new Date();
+                // A data de recebimento é implicitamente a data de registro/update
+                const itemDate = new Date(item.registeredAt); 
+                
+                if (item.status === 'Recebido' && itemDate.getMonth() === today.getMonth() && itemDate.getFullYear() === today.getFullYear()) {
+                    receivedThisMonth += item.amount;
                 }
                 
-                const statusColor = service.status === 'Recebido' ? 'text-green-600' : (service.status === 'Atrasado' ? 'text-red-600' : 'text-yellow-600');
-                
-                serviceHistoryHTML += `
-                    <div class="mb-4 p-3 border rounded-lg shadow-sm ${service.status === 'Recebido' ? 'bg-green-50' : 'bg-gray-50'}">
-                        <div class="flex justify-between items-center">
-                            <span class="font-semibold text-sm text-gray-800">Serviço: ${formatCurrency(service.amount)} (${service.description})</span>
-                            <span class="text-xs ${statusColor} font-bold">${service.status}</span>
-                        </div>
-                        <p class="text-xs text-gray-500 mb-2">Vencimento: ${service.dueDate}</p>
-                        
-                        <h5 class="text-xs font-semibold mt-2 text-indigo-700">Materiais (Custo total: ${formatCurrency(serviceCost)}):</h5>
-                        <ul class="list-disc list-inside">
-                            ${materialsHTML || '<li class="ml-4 italic text-gray-500 text-xs">Nenhum material registrado.</li>'}
-                        </ul>
+                itemsList.push(item);
+            });
+        }
+        
+        receivables = itemsList;
+        renderReceivableTable(itemsList, totalReceivable, receivedThisMonth, openCount);
+    }, e => showNotification(`Erro ao carregar Contas a Receber (RTDB): ${e.message}`, 'error'));
+};
+
+const renderReceivableTable = (items, totalReceivable, receivedThisMonth, openCount) => {
+    const tbody = document.getElementById('receivable-table-body');
+    if (!tbody) return;
+
+    // Atualiza KPIs
+    document.getElementById('total-receivable').textContent = formatCurrency(totalReceivable);
+    document.getElementById('received-this-month').textContent = formatCurrency(receivedThisMonth);
+    document.getElementById('open-receivable-count').textContent = openCount;
+    
+    if (items.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="5" class="px-6 py-4 text-center text-gray-500 italic">Nenhuma conta a receber registrada.</td></tr>`;
+        return;
+    }
+    
+    items.sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate)); // Ordena por data de vencimento
+
+    tbody.innerHTML = items.map(t => {
+        const isReceived = t.status === 'Recebido';
+        let statusClass = 'bg-yellow-100 text-yellow-800';
+        if (isReceived) statusClass = 'bg-green-100 text-green-800';
+        if (t.status === 'Atrasado') statusClass = 'bg-red-100 text-red-800';
+        
+        const actionButton = isReceived ? 
+            `<button data-action="unreceive" data-id="${t.id}" class="p-2 text-gray-400 hover:text-gray-600" title="Marcar como Aberta">
+                <i class='bx bx-undo text-xl'></i>
+            </button>` :
+            `<button data-action="receive" data-id="${t.id}" class="p-2 text-green-600 hover:bg-green-100 rounded-full" title="Marcar como Recebido">
+                <i class='bx bx-check-square text-xl'></i>
+            </button>`;
+
+        return `
+            <tr class="hover:bg-gray-50 transition-colors">
+                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">${t.patientName}</td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${t.dueDate}</td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">${t.description}</td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm font-bold text-green-600">${formatCurrency(t.amount)}</td>
+                <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                    <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${statusClass} mr-2">${t.status}</span>
+                    <div class="inline-flex space-x-2">
+                        <button data-action="manage-materials-table" data-id="${t.id}" class="p-2 text-yellow-500 hover:bg-yellow-100 rounded-full" title="Gerenciar Materiais">
+                            <i class='bx bx-sitemap text-xl'></i>
+                        </button>
+                        ${actionButton}
+                        <button data-action="edit-receivable" data-id="${t.id}" class="p-2 text-indigo-600 hover:bg-indigo-100 rounded-full" title="Editar">
+                            <i class='bx bxs-edit-alt text-xl'></i>
+                        </button>
+                        <button data-action="delete-receivable" data-id="${t.id}" class="p-2 text-red-600 hover:bg-red-100 rounded-full" title="Excluir">
+                            <i class='bx bxs-trash-alt text-xl'></i>
+                        </button>
                     </div>
-                `;
+                </td>
+            </tr>
+        `;
+    }).join('');
+
+    tbody.addEventListener('click', (e) => {
+        const btn = e.target.closest('button');
+        if (!btn) return;
+        const receivableId = btn.dataset.id;
+        const item = receivables.find(t => t.id === receivableId);
+
+        switch (btn.dataset.action) {
+            case 'edit-receivable': openReceivableFormModal(item); break;
+            case 'delete-receivable': deleteReceivable(receivableId, item.patientName); break;
+            case 'receive': updateReceivableStatus(receivableId, 'Recebido'); break;
+            case 'unreceive': updateReceivableStatus(receivableId, 'Aberto'); break;
+            case 'manage-materials-table': openMaterialConsumptionModal(item); break;
+        }
+    });
+};
+
+const deleteReceivable = async (receivableId, patientName) => {
+    if (!confirm(`Tem certeza que deseja excluir a conta a receber do paciente ${patientName}?`)) return;
+
+    try {
+        await db.ref(getReceivablePath(currentUser.uid) + '/' + receivableId).remove();
+        
+        // Opcional: Limpar os materiais consumidos (remoção em cascata)
+        await db.ref(getReceivableMaterialsPath(receivableId)).remove();
+        
+        showNotification(`Conta a Receber excluída com sucesso!`, 'success');
+    } catch (e) {
+        showNotification(`Erro ao excluir Conta a Receber (RTDB): ${e.message}`, 'error');
+        console.error("Erro ao excluir Conta a Receber (RTDB):", e);
+    }
+};
+
+const updateReceivableStatus = async (receivableId, newStatus) => {
+    const item = receivables.find(r => r.id === receivableId);
+    if (!item) return;
+
+    try {
+        if (newStatus === 'Recebido' && item.status !== 'Recebido') {
+            // LÓGICA CRÍTICA DE NEGÓCIO: DAR BAIXA NO ESTOQUE
+            const materialsToConsume = receivableMaterialsCache[receivableId] || [];
+            
+            if (materialsToConsume.length > 0) {
+                for (const consumption of materialsToConsume) {
+                    const stockRef = db.ref(getStockCollectionPath(currentUser.uid) + '/' + consumption.materialId);
+                    const snapshot = await stockRef.once('value');
+                    const stockItem = snapshot.val();
+                    
+                    if (stockItem) {
+                        const newQuantity = stockItem.quantity - consumption.quantityUsed;
+                        if (newQuantity < 0) {
+                            throw new Error(`Estoque insuficiente de ${stockItem.name}. Qtde disponível: ${stockItem.quantity}`);
+                        }
+                        
+                        // Atualiza o estoque no RTDB
+                        await stockRef.update({ quantity: newQuantity });
+                    }
+                }
+                showNotification(`Baixa de estoque aplicada para ${materialsToConsume.length} materiais.`, 'warning');
             }
         }
         
-        historyContainer.innerHTML = serviceHistoryHTML || '<p class="text-center text-gray-500 italic">Nenhum serviço financeiro registrado para este paciente.</p>';
-        
-    }).catch(e => {
-        historyContainer.innerHTML = `<p class="text-red-500">Erro ao carregar histórico: ${e.message}</p>`;
-        console.error("Erro ao carregar histórico financeiro do paciente:", e);
-    });
+        // Atualiza o status da Conta a Receber
+        await db.ref(getReceivablePath(currentUser.uid) + '/' + receivableId).update({
+            status: newStatus,
+            receivedDate: newStatus === 'Recebido' ? new Date().toISOString() : null
+        });
+        showNotification(`Conta marcada como ${newStatus}!`, 'success');
+    } catch (e) {
+        showNotification(`Falha na Baixa/Recebimento: ${e.message}`, 'error');
+        console.error("Erro na baixa de estoque:", e);
+    }
 };
 
+// --- Funções CRUD Despesas (Expense) ---
+let expenses = [];
+let expensePurchasedItemsCache = {}; // NOVO: Cache para itens comprados por despesa
 
-const setupJournalListeners = (patient) => {
-    const timeline = document.getElementById('journal-timeline');
-    const responseInput = document.getElementById('dentist-response-input');
-    const sendBtn = document.getElementById('send-response-btn');
-    const askAiBtn = document.getElementById('ask-ai-btn');
-    const mediaBtn = document.getElementById('attach-media-btn');
-    const mediaInput = document.getElementById('media-input');
-    const fileNameDisplay = document.getElementById('file-name-display');
+// NOVO MODAL: Para gerenciar os itens comprados (compra de estoque)
+const openItemsPurchaseModal = (expense) => {
+    const modalTitle = `Itens Comprados: ${expense.ref || 'Despesa Sem Ref'}`;
     
-    let currentFile = null;
-
-    mediaInput.addEventListener('change', (e) => {
-        currentFile = e.target.files[0] || null;
-        fileNameDisplay.textContent = currentFile ? formatFileName(currentFile.name) : '';
-    });
-    mediaBtn.addEventListener('click', () => mediaInput.click());
-
-    sendBtn.addEventListener('click', () => {
-        sendJournalEntry(patient, responseInput.value, 'Dentista', currentFile);
-        responseInput.value = '';
-        currentFile = null;
-        fileNameDisplay.textContent = '';
-    });
+    // Tenta carregar os itens comprados para esta despesa
+    const itemsPurchased = expensePurchasedItemsCache[expense.id] || [];
     
-    askAiBtn.addEventListener('click', () => handleAIRequest(patient));
+    const itemsListHTML = itemsPurchased.length > 0 ? itemsPurchased.map(i => `
+        <li class="flex justify-between items-center py-2 border-b">
+            <span>${i.name}</span>
+            <span class="font-semibold">${i.quantityPurchased} ${i.unit} (Custo: ${formatCurrency(i.cost * i.quantityPurchased)})</span>
+        </li>
+    `).join('') : '<p class="italic text-gray-500">Nenhum item comprado registrado. Adicione um abaixo.</p>';
+    
+    // Opções de estoque para adicionar (apenas o nome e a unidade do item de estoque existente)
+    const stockOptions = stockItems.map(item => 
+        `<option value="${item.id}" data-unit="${item.unit}" data-cost="${item.cost}">
+            ${item.name} (${item.unit})
+        </option>`
+    ).join('');
 
-    // RTDB ADAPTADO: Listener para o Diário
-    const journalRef = db.ref(getJournalCollectionPath(patient.id));
-    journalRef.orderByChild('timestamp').on('value', snapshot => {
-        const entriesObject = snapshot.val();
-        const entries = [];
-        if (entriesObject) {
-            Object.keys(entriesObject).forEach(key => {
-                 // RTDB não tem um objeto Date, então usamos o new Date(ISO String)
-                entries.push({ id: key, ...entriesObject[key], timestamp: new Date(entriesObject[key].timestamp) });
+    document.getElementById('modal-title').textContent = modalTitle;
+    document.getElementById('modal-body').innerHTML = `
+        <div class="space-y-4">
+            <h4 class="text-lg font-bold text-red-700">Itens Registrados nesta Despesa:</h4>
+            <ul class="bg-gray-50 p-4 rounded-lg list-none divide-y" id="purchased-items-list">
+                ${itemsListHTML}
+            </ul>
+
+            <h4 class="text-lg font-bold text-red-700 mt-6">Registrar Compra (Atualiza Estoque):</h4>
+            <form id="add-purchase-form" class="space-y-3 p-4 border rounded-lg bg-white">
+                <input type="hidden" id="purchase-expense-id" value="${expense.id}">
+                <div class="grid grid-cols-4 gap-3">
+                    <div class="col-span-2">
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Material</label>
+                        <select id="purchase-material-id" required class="w-full p-3 border border-gray-300 rounded-lg">
+                            <option value="">Selecione o Material...</option>
+                            ${stockOptions}
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Qtde Comprada</label>
+                        <input type="number" step="any" min="0" id="purchase-quantity" required class="w-full p-3 border border-gray-300 rounded-lg" placeholder="Qtde">
+                    </div>
+                     <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Custo Un (R$)</label>
+                        <input type="number" step="0.01" id="purchase-cost" required class="w-full p-3 border border-gray-300 rounded-lg" placeholder="R$">
+                    </div>
+                </div>
+                <button type="submit" class="w-full py-2 bg-red-600 hover:bg-red-700 text-white font-semibold rounded-lg transition duration-200">
+                    Registrar Compra e Atualizar Estoque
+                </button>
+            </form>
+        </div>
+        <div class="flex justify-end pt-4">
+            <button type="button" id="close-purchase-modal" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg">Fechar</button>
+        </div>
+    `;
+
+    // Carregar o cache inicial e adicionar listeners
+    loadExpensePurchasedItems(expense.id);
+    document.getElementById('add-purchase-form').addEventListener('submit', savePurchasedItem);
+    document.getElementById('close-purchase-modal').addEventListener('click', closeModal);
+    
+    openModal(modalTitle, 'max-w-3xl');
+};
+
+const loadExpensePurchasedItems = (expenseId) => {
+    // Listener para carregar e atualizar a lista de itens comprados em tempo real
+    const itemsRef = db.ref(getExpensePurchasedItemsPath(expenseId));
+    
+    itemsRef.on('value', snapshot => {
+        const itemsObject = snapshot.val();
+        let itemsList = [];
+        
+        if (itemsObject) {
+            Object.keys(itemsObject).forEach(key => {
+                itemsList.push({ id: key, ...itemsObject[key] });
             });
         }
-        // O RTDB ordena do mais antigo para o mais novo, precisamos inverter para mostrar o mais recente em cima.
-        entries.reverse();
-        renderJournalEntries(timeline, entries);
-    }, e => showNotification(`Erro ao carregar diário (RTDB): ${e.message}`, 'error'));
+        
+        expensePurchasedItemsCache[expenseId] = itemsList;
+        
+        // Atualiza a UI do modal se ele estiver aberto
+        const listContainer = document.getElementById('purchased-items-list');
+        if (listContainer) {
+            listContainer.innerHTML = itemsList.length > 0 ? itemsList.map(i => `
+                <li class="flex justify-between items-center py-2 border-b">
+                    <span>${i.name}</span>
+                    <span class="font-semibold">${i.quantityPurchased} ${i.unit} (Custo Total: ${formatCurrency(i.cost * i.quantityPurchased)})</span>
+                </li>
+            `).join('') : '<p class="italic text-gray-500">Nenhum item comprado registrado. Adicione um abaixo.</p>';
+        }
+    });
 };
 
-const sendJournalEntry = async (patient, text, author, file) => {
-    if (!text.trim() && !file) return;
-
-    let mediaData = null;
-    let uploadPromise = Promise.resolve(null);
+const savePurchasedItem = async (e) => {
+    e.preventDefault();
+    const expenseId = document.getElementById('purchase-expense-id').value;
+    const materialSelect = document.getElementById('purchase-material-id');
+    const materialId = materialSelect.value;
+    const quantityPurchased = parseFloat(document.getElementById('purchase-quantity').value);
+    const unitCost = parseFloat(document.getElementById('purchase-cost').value);
     
-    if (file) {
-        uploadPromise = window.uploadToCloudinary(file).then(res => {
-            showNotification(`Arquivo ${file.name} enviado para Cloudinary!`, 'success');
-            return res;
-        }).catch(error => {
-            showNotification(`Falha ao carregar arquivo: ${error.message}`, 'error');
-            return null;
+    if (!materialId || quantityPurchased <= 0 || unitCost <= 0) {
+        showNotification("Preencha todos os campos de compra corretamente.", "error");
+        return;
+    }
+    
+    const selectedItem = stockItems.find(i => i.id === materialId);
+    if (!selectedItem) {
+        showNotification("Material não encontrado no estoque.", "error");
+        return;
+    }
+    
+    const purchaseData = {
+        materialId: materialId,
+        name: selectedItem.name,
+        unit: selectedItem.unit,
+        quantityPurchased: quantityPurchased,
+        cost: unitCost,
+        registeredAt: new Date().toISOString()
+    };
+    
+    try {
+        // 1. Salva o item comprado no nó da Despesa
+        await db.ref(getExpensePurchasedItemsPath(expenseId)).push(purchaseData);
+        
+        // 2. ATUALIZA O ESTOQUE (Adiciona a quantidade)
+        const stockRef = db.ref(getStockCollectionPath(currentUser.uid) + '/' + materialId);
+        const currentStock = await stockRef.once('value');
+        const currentData = currentStock.val();
+        
+        if (currentData) {
+            const newQuantity = currentData.quantity + quantityPurchased;
+            // Cálculo do novo Custo Médio Ponderado (simplificado: apenas atualiza a quantidade)
+            await stockRef.update({ 
+                quantity: newQuantity,
+                lastUpdated: new Date().toISOString()
+            });
+        }
+        
+        showNotification(`Compra de ${quantityPurchased} ${selectedItem.unit} de ${selectedItem.name} registrada e estoque atualizado!`, 'success');
+        
+        // Limpa o formulário de consumo
+        document.getElementById('purchase-quantity').value = '';
+        document.getElementById('purchase-cost').value = '';
+        materialSelect.value = '';
+        
+    } catch (e) {
+        showNotification(`Erro ao registrar compra e atualizar estoque (RTDB): ${e.message}`, 'error');
+        console.error("Erro ao salvar compra (RTDB):", e);
+    }
+};
+
+const openExpenseFormModal = (item = null) => {
+    const isEdit = !!item;
+    const modalTitle = isEdit ? `Editar Despesa` : 'Registrar Despesa';
+
+    // Botão de itens comprados só aparece na edição ou após o cadastro inicial
+    const purchasedItemsButton = isEdit ? `
+        <button type="button" id="manage-purchase-btn" data-expense-id="${item.id}" class="py-2 px-4 bg-yellow-500 hover:bg-yellow-600 text-white font-bold rounded-lg transition duration-200 shadow-md">
+            <i class='bx bx-cart mr-2'></i> Gerenciar Itens Comprados
+        </button>
+    ` : '';
+    
+    document.getElementById('modal-title').textContent = modalTitle;
+    document.getElementById('modal-body').innerHTML = `
+        <form id="expense-form" class="space-y-4">
+            <input type="hidden" id="expense-id" value="${isEdit ? item.id : ''}">
+            
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Nota Fiscal/Referência</label>
+                    <input type="text" id="expense-ref" value="${isEdit ? item.ref : ''}" class="w-full p-3 border border-gray-300 rounded-lg" placeholder="Ex: NF 1234, Aluguel Setembro">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Valor Total (R$)</label>
+                    <input type="number" step="0.01" id="expense-amount" value="${isEdit ? item.amount : ''}" required class="w-full p-3 border border-gray-300 rounded-lg">
+                </div>
+            </div>
+            
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Vencimento</label>
+                    <input type="date" id="expense-due-date" value="${isEdit ? item.dueDate : new Date().toISOString().substring(0, 10)}" required class="w-full p-3 border border-gray-300 rounded-lg">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Fornecedor/Categoria</label>
+                    <input type="text" id="expense-supplier" value="${isEdit ? item.supplier : ''}" class="w-full p-3 border border-gray-300 rounded-lg" placeholder="Ex: Contabilidade, Imobiliária">
+                </div>
+            </div>
+            
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Descrição</label>
+                <textarea id="expense-description" rows="2" required class="w-full p-3 border border-gray-300 rounded-lg resize-none">${isEdit ? item.description : ''}</textarea>
+            </div>
+            
+            <div class="flex justify-between items-center pt-4">
+                ${purchasedItemsButton}
+                <div class="flex space-x-3">
+                    <button type="button" id="form-cancel-btn" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg">Cancelar</button>
+                    <button type="submit" class="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700">${isEdit ? 'Atualizar' : 'Registrar Despesa'}</button>
+                </div>
+            </div>
+        </form>
+    `;
+
+    document.getElementById('expense-form').addEventListener('submit', saveExpense);
+    document.getElementById('form-cancel-btn').addEventListener('click', closeModal);
+    
+    if (isEdit) {
+         document.getElementById('manage-purchase-btn').addEventListener('click', (e) => {
+            e.stopPropagation();
+            openItemsPurchaseModal(item);
         });
     }
 
-    mediaData = await uploadPromise;
+    openModal(modalTitle, 'max-w-xl');
+};
 
-    if (!text.trim() && !mediaData) return;
-    
-    const entryData = {
-        text: text.trim(),
-        author: author,
-        isAI: author.includes('IA'),
-        timestamp: new Date().toISOString(), // Usamos ISO String para o RTDB
-        media: mediaData
+const saveExpense = async (e) => {
+    e.preventDefault();
+    const isEdit = !!document.getElementById('expense-id').value;
+    const expenseId = document.getElementById('expense-id').value;
+
+    const itemData = {
+        id: expenseId || null,
+        ref: document.getElementById('expense-ref').value,
+        supplier: document.getElementById('expense-supplier').value,
+        amount: parseFloat(document.getElementById('expense-amount').value),
+        dueDate: document.getElementById('expense-due-date').value,
+        description: document.getElementById('expense-description').value,
+        registeredAt: new Date().toISOString(),
+        // NOVO STATUS: Facilita controle de Contas a Pagar
+        status: 'Aberto' 
     };
 
     try {
-        // RTDB ADAPTADO: Usando .push() para criar um novo nó de entrada
-        await db.ref(getJournalCollectionPath(patient.id)).push(entryData);
+        const expenseRef = db.ref(getExpensePath(currentUser.uid));
+
+        if (isEdit) {
+            await expenseRef.child(expenseId).update(itemData);
+        } else {
+            const newRef = expenseRef.push();
+            itemData.id = newRef.key;
+            await newRef.set(itemData);
+            // Se for um novo registro, reabre o modal no modo edição para gerenciar a compra
+            closeModal();
+            openExpenseFormModal(itemData);
+        }
+
+        if (isEdit) closeModal();
+        showNotification(`Despesa registrada com sucesso!`, 'success');
     } catch (e) {
-        showNotification(`Erro ao enviar entrada (RTDB): ${e.message}`, 'error');
+        showNotification(`Erro ao salvar Despesa (RTDB): ${e.message}`, 'error');
+        console.error("Erro ao salvar Despesa (RTDB):", e);
     }
 };
 
-const handleAIRequest = async (patient) => {
-    const askAiBtn = document.getElementById('ask-ai-btn');
-    askAiBtn.disabled = true;
-    askAiBtn.innerHTML = "<i class='bx bx-loader-alt bx-spin text-xl mr-2'></i> IA Pensando...";
+const loadExpenses = () => {
+    if (!currentUser) return;
+
+    const expenseRef = db.ref(getExpensePath(currentUser.uid));
+
+    expenseRef.on('value', snapshot => {
+        const itemsObject = snapshot.val();
+        let itemsList = [];
+        let totalExpenseOpen = 0;
+        let totalPaidThisMonth = 0;
+        let nextDueDate = "N/A";
+        
+        const today = new Date().toISOString().substring(0, 10);
+        const currentMonth = new Date().getMonth();
+        const currentYear = new Date().getFullYear();
+
+        if (itemsObject) {
+            Object.keys(itemsObject).forEach(key => {
+                const item = { id: key, ...itemsObject[key] };
+                
+                if (item.status === 'Aberto') {
+                    totalExpenseOpen += item.amount;
+                }
+                
+                if (item.status === 'Pago') {
+                     const paidDate = new Date(item.paidDate);
+                     if (paidDate.getMonth() === currentMonth && paidDate.getFullYear() === currentYear) {
+                         totalPaidThisMonth += item.amount;
+                     }
+                }
+                
+                // Próximo Vencimento (apenas abertas)
+                if (item.status === 'Aberto' && item.dueDate >= today && (nextDueDate === "N/A" || item.dueDate < nextDueDate)) {
+                    nextDueDate = item.dueDate;
+                }
+                
+                itemsList.push(item);
+            });
+        }
+        
+        expenses = itemsList;
+        renderExpenseTable(itemsList, totalExpenseOpen, totalPaidThisMonth, nextDueDate);
+    }, e => showNotification(`Erro ao carregar Despesas (RTDB): ${e.message}`, 'error'));
+};
+
+const renderExpenseTable = (items, totalExpenseOpen, totalPaidThisMonth, nextDueDate) => {
+    const tbody = document.getElementById('expense-table-body');
+    if (!tbody) return;
+
+    // Atualiza KPIs
+    document.getElementById('total-expense-open').textContent = formatCurrency(totalExpenseOpen);
+    document.getElementById('paid-this-month').textContent = formatCurrency(totalPaidThisMonth);
+    document.getElementById('next-due-date').textContent = nextDueDate;
+
+    if (items.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="5" class="px-6 py-4 text-center text-gray-500 italic">Nenhuma despesa registrada.</td></tr>`;
+        return;
+    }
     
-    try {
-        // 1. Obter as diretrizes do BRAIN (RTDB ADAPTADO)
-        const brainRef = db.ref(getAdminCollectionPath(currentUser.uid, 'aiConfig') + '/directives');
-        const brainSnap = await brainRef.once('value');
-        const directives = brainSnap.exists() ? brainSnap.val().promptDirectives : 'Atuar como assistente padrão de clínica odontológica.';
-        
-        // 2. Personalizar o Prompt de Sistema
-        const systemPrompt = directives
-            .replace(/Variável de Tratamento: \[TIPO\]/, `Variável de Tratamento: ${patient.treatmentType || 'Geral'}`)
-            .replace(/Meta: \[META\]/, `Meta: ${patient.treatmentGoal || 'N/A'}`);
-        
-        // 3. Montar a Mensagem do Usuário (Contexto)
-        const userMessage = `Você é o assistente do Dr(a). ${currentUser.email}. O paciente ${patient.name} com tratamento "${patient.treatmentType}" e meta "${patient.treatmentGoal}" acaba de solicitar uma orientação/status. Responda-o com base nas diretrizes. Use um tom encorajador e profissional.`;
+    items.sort((a, b) => new Date(b.dueDate) - new Date(a.dueDate)); // Ordena por data de vencimento (reversa)
 
-        // 4. CHAMA A FUNÇÃO REAL DA API
-        const geminiResponseText = await window.callGeminiAPI(systemPrompt, userMessage);
+    tbody.innerHTML = items.map(t => {
+        const isPaid = t.status === 'Pago';
+        let statusClass = 'bg-red-100 text-red-800';
+        if (isPaid) statusClass = 'bg-green-100 text-green-800';
         
-        // 5. Enviar a resposta da IA para o Diário
-        sendJournalEntry(patient, geminiResponseText, 'Assistente IA', null);
-
-    } catch (e) {
-        showNotification(`Erro na solicitação de IA: ${e.message}`, 'error');
-        console.error("Erro na solicitação de IA:", e);
-    } finally {
-        askAiBtn.disabled = false;
-        askAiBtn.innerHTML = "<i class='bx bxs-brain text-xl mr-2'></i> Pedir Ajuda à IA";
-    }
-};
-
-
-const renderJournalEntries = (container, entries) => {
-    container.innerHTML = entries.map(entry => {
-        const isDentist = entry.author === 'Dentista';
-        const isAI = entry.isAI;
-        const entryClass = isDentist ? 'entry-dentist' : (isAI ? 'entry-ai' : 'entry-patient');
-        
-        const mediaHtml = entry.media ? `
-            <div class="mt-2 p-1 bg-white rounded border border-gray-300 text-xs flex items-center justify-between">
-                <i class='bx bx-image text-base mr-1 text-indigo-600'></i>
-                <span>${formatFileName(entry.media.name)}</span>
-                <a href="${entry.media.url}" target="_blank" class="text-indigo-600 hover:underline ml-2">Ver</a>
-            </div>
-        ` : '';
+        const actionButton = isPaid ? 
+             `<button data-action="unpay" data-id="${t.id}" class="p-2 text-gray-400 hover:text-gray-600" title="Marcar como Aberta">
+                <i class='bx bx-undo text-xl'></i>
+            </button>` :
+            `<button data-action="pay" data-id="${t.id}" class="p-2 text-green-600 hover:bg-green-100 rounded-full" title="Marcar como Paga">
+                <i class='bx bx-check-square text-xl'></i>
+            </button>`;
 
         return `
-            <div class="journal-entry ${entryClass}">
-                <div class="flex justify-between items-center mb-1">
-                    <span class="text-xs font-semibold ${isDentist ? 'text-indigo-700' : (isAI ? 'text-cyan-700' : 'text-gray-700')}">
-                        ${entry.author}
-                    </span>
-                    <span class="text-xs text-gray-500">
-                        ${entry.timestamp ? formatDateTime(entry.timestamp.toISOString()) : 'Carregando...'}
-                    </span>
-                </div>
-                <p class="text-gray-800 text-sm whitespace-pre-wrap">${entry.text}</p>
-                ${mediaHtml}
-            </div>
+            <tr class="hover:bg-gray-50 transition-colors">
+                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${t.dueDate}</td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">${t.supplier || 'N/A'}</td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">${t.ref || 'N/A'}</td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm font-bold text-red-600">${formatCurrency(t.amount)}</td>
+                <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                    <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${statusClass} mr-2">${t.status}</span>
+                    <div class="inline-flex space-x-2">
+                         <button data-action="manage-purchase-table" data-id="${t.id}" class="p-2 text-yellow-500 hover:bg-yellow-100 rounded-full" title="Gerenciar Itens Comprados">
+                            <i class='bx bx-cart text-xl'></i>
+                        </button>
+                        ${actionButton}
+                        <button data-action="edit-expense" data-id="${t.id}" class="p-2 text-indigo-600 hover:bg-indigo-100 rounded-full" title="Editar">
+                            <i class='bx bxs-edit-alt text-xl'></i>
+                        </button>
+                        <button data-action="delete-expense" data-id="${t.id}" class="p-2 text-red-600 hover:bg-red-100 rounded-full" title="Excluir">
+                            <i class='bx bxs-trash-alt text-xl'></i>
+                        </button>
+                    </div>
+                </td>
+            </tr>
         `;
     }).join('');
+
+    tbody.addEventListener('click', (e) => {
+        const btn = e.target.closest('button');
+        if (!btn) return;
+        const expenseId = btn.dataset.id;
+        const item = expenses.find(t => t.id === expenseId);
+
+        switch (btn.dataset.action) {
+            case 'edit-expense': openExpenseFormModal(item); break;
+            case 'delete-expense': deleteExpense(expenseId, item.description); break;
+            case 'pay': updateExpenseStatus(expenseId, 'Pago'); break;
+            case 'unpay': updateExpenseStatus(expenseId, 'Aberto'); break;
+            case 'manage-purchase-table': openItemsPurchaseModal(item); break;
+        }
+    });
 };
 
+const deleteExpense = async (expenseId, description) => {
+    if (!confirm(`Tem certeza que deseja excluir a despesa: "${description}"?`)) return;
 
-// --- 3. GESTÃO FINANCEIRA (INCLUINDO ESTOQUE/MATERIAIS) ---
-const renderFinancialManager = (container) => {
-    container.innerHTML = `
-        <div class="p-8 bg-white shadow-2xl rounded-2xl border border-indigo-100">
-            <h2 class="text-3xl font-extrabold text-indigo-800 mb-8 flex items-center">
-                <i class='bx bxs-wallet text-3xl mr-3 text-indigo-600'></i> Gestão Financeira e Estoque
-            </h2>
+    try {
+        await db.ref(getExpensePath(currentUser.uid) + '/' + expenseId).remove();
+        showNotification(`Despesa excluída com sucesso!`, 'success');
+    } catch (e) {
+        showNotification(`Erro ao excluir Despesa (RTDB): ${e.message}`, 'error');
+        console.error("Erro ao excluir Despesa (RTDB):", e);
+    }
+};
+
+const updateExpenseStatus = async (expenseId, newStatus) => {
+    try {
+        await db.ref(getExpensePath(currentUser.uid) + '/' + expenseId).update({
+            status: newStatus,
+            paidDate: newStatus === 'Pago' ? new Date().toISOString() : null
+        });
+        showNotification(`Despesa marcada como ${newStatus}!`, 'success');
+    } catch (e) {
+        showNotification(`Erro ao atualizar status (RTDB): ${e.message}`, 'error');
+    }
+};
+
+// --- Funções de Modal ---
+const openModal = (title, maxWidth = 'max-w-xl') => {
+    const modal = document.getElementById('app-modal');
+    const content = modal.querySelector('.modal-content');
+    modal.querySelector('#modal-title').textContent = title;
+    content.className = `modal-content w-full ${maxWidth}`;
+    modal.classList.remove('hidden');
+    modal.classList.add('flex');
+};
+
+const closeModal = () => {
+    document.getElementById('app-modal').classList.add('hidden');
+    document.getElementById('app-modal').classList.remove('flex');
+    document.getElementById('modal-body').innerHTML = ''; // Limpa o corpo
+    
+    // Recarregar os dados necessários ao fechar um modal
+    if (currentView === 'patients') {
+        loadPatients();
+    }
+    // Forçamos a recarga do conteúdo financeiro (incluindo abas) ao fechar o modal
+    if (currentView === 'financials') {
+        renderContent(); 
+    }
+    // Recarregar KPIs no Dashboard
+    if (document.getElementById('dashboard-patients-count')) {
+        loadDashboardKPIs();
+    }
+};
+
+// ==================================================================
+// INICIALIZAÇÃO DA APLICAÇÃO E LISTENERS GERAIS
+// ==================================================================
+document.addEventListener('DOMContentLoaded', () => {
+    // 1. Inicia a Conexão e Autenticação
+    initializeFirebase();
+    
+    // 2. Listener para fechar o modal
+    document.getElementById('close-modal').addEventListener('click', closeModal);
+    
+    // 3. Listener de Logout
+    document.getElementById('logout-button').addEventListener('click', () => {
+        if (auth) {
+            auth.signOut().then(() => {
+                showNotification("Logout realizado com sucesso. Recarregando.", "success");
+                // Força o onAuthStateChanged a recarregar a tela de login
+            });
+        }
+    });
+    
+    // 4. Listener do formulário de Login/Registro
+    const authForm = document.getElementById('auth-form');
+    if (authForm) authForm.addEventListener('submit', handleAuthSubmit);
+    const toggleBtn = document.getElementById('toggle-auth-mode');
+    if (toggleBtn) toggleBtn.addEventListener('click', toggleAuthMode);
+
+    // 5. Listener geral para navegação no corpo principal (após o DOM estar pronto)
+    // Opcional, mas útil para botões dinâmicos.
+    document.getElementById('main-content').addEventListener('click', (e) => {
+        // Exemplo: if (e.target.closest('#some-button')) { ... }
+    });
+});
