@@ -1,5 +1,6 @@
 // ==================================================================
 // MÓDULO PRINCIPAL - DENTISTA INTELIGENTE (AGORA TOTALMENTE ENCAPSULADO)
+// ESTA VERSÃO CORRIGE O SYNTAXERROR (allPatients already declared)
 // ==================================================================
 (function() {
     
