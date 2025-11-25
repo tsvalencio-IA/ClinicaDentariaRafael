@@ -1,9 +1,9 @@
 // ==================================================================
-// MÓDULO PRINCIPAL - DENTISTA INTELIGENTE (ESTABILIDADE TOTAL)
+// MÓDULO PRINCIPAL - DENTISTA INTELIGENTE (AGORA TOTALMENTE ENCAPSULADO)
 // ==================================================================
 (function() {
     
-// Variáveis de Configuração e Estado
+// Variáveis Globais (Definidas em config.js e Injetadas pelo ambiente)
 const config = window.AppConfig;
 const appId = config.APP_ID; 
 
@@ -11,7 +11,7 @@ let db, auth;
 let currentUser = null;
 let currentView = 'dashboard';
 let isLoginMode = true; 
-// VARIÁVEIS DE DADOS GLOBAIS DENTRO DO ESCOPO ISOLADO
+// VARIÁVEIS DE DADOS GLOBAIS DENTRO DO ESCOPO ISOLADO (CORRIGIDO PARA SINTAXE)
 let allPatients = []; 
 let receivables = []; 
 let stockItems = []; 
@@ -339,7 +339,7 @@ const renderDashboard = (container) => {
                     <i class='bx bxs-brain text-xl mr-2'></i> Alimentar o BRAIN (Diretrizes da IA)
                 </h3>
                 <p class="text-gray-600 mb-4 text-sm">Defina as regras. Use: <code>Variável de Tratamento: [TIPO]</code> e <code>Meta: [META]</code>.</p>
-                <textarea id="brain-input" rows="5" class="w-full p-3 border border-indigo-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 shadow-inner resize-none" placeholder="Ex: 'Atuar como assistente de ortodontia. Focar em higiene e uso de elásticos. Variável de Tratamento: [TIPO]. Meta: [META].'"></textarea>
+                <textarea id="brain-input" rows="5" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 shadow-inner resize-none" placeholder="Ex: 'Atuar como assistente de ortodontia. Focar em higiene e uso de elásticos. Variável de Tratamento: [TIPO]. Meta: [META].'"></textarea>
                 <div class="flex justify-between items-center mt-4">
                     <button id="save-brain-btn" class="py-3 px-6 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg transition duration-200 shadow-md">
                         <i class='bx bxs-save text-xl mr-2'></i> Salvar Diretrizes
@@ -1065,8 +1065,6 @@ const renderFinancialTab = (tab, container) => {
 
 // --- Funções CRUD Estoque ---
 
-let stockItems = [];
-
 const loadStock = () => {
     if (!currentUser) return;
 
@@ -1237,10 +1235,6 @@ const deleteStockItem = async (itemId, itemName) => {
 };
 
 // --- Funções CRUD Contas a Receber (Receivable) ---
-let receivables = [];
-let receivableMaterialsCache = {}; // Cache para materiais usados por conta a receber
-
-// NOVO MODAL: Para gerenciar os materiais vinculados ao serviço
 const openMaterialConsumptionModal = (receivable) => {
     const modalTitle = `Materiais Utilizados: ${receivable.patientName}`;
     
