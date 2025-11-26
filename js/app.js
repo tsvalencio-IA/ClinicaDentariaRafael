@@ -1,32 +1,34 @@
 // ==================================================================
-// MÓDULO PRINCIPAL - DENTISTA INTELIGENTE (VERSÃO SÊNIOR CORRIGIDA)
+// MÓDULO PRINCIPAL - DENTISTA INTELIGENTE (VERSÃO SÊNIOR INTEGRADA)
 // ==================================================================
 (function() {
     
-    // 1. CONFIGURAÇÕES GLOBAIS
+    // 1. CONFIGURAÇÕES E ESTADO
+    // Usamos var para garantir que o script não trave se for recarregado
     var config = window.AppConfig;
     var appId = config ? config.APP_ID : 'dentista-inteligente-app';
     
-    // Variáveis de Estado (VAR para estabilidade máxima)
     var db, auth;
     var currentUser = null;
     var currentView = 'dashboard';
     var isLoginMode = true; 
     
-    // Listas de Dados (Caches Locais)
+    // Caches de Dados (Inicializados vazios)
     var allPatients = []; 
     var receivables = []; 
     var stockItems = []; 
     var expenses = []; 
     
     // ==================================================================
-    // 2. FUNÇÕES AUXILIARES
+    // 2. UTILITÁRIOS E FORMATAÇÃO
     // ==================================================================
     
     function getAdminPath(uid, path) { return 'artifacts/' + appId + '/users/' + uid + '/' + path; }
     function getStockPath(uid) { return getAdminPath(uid, 'stock'); }
     function getFinancePath(uid, type) { return getAdminPath(uid, 'finance/' + type); }
-    
+    function getReceivableMaterialsPath(recId) { return getFinancePath(currentUser.uid, 'receivable') + '/' + recId + '/materials'; }
+    function getExpensePurchasedItemsPath(expId) { return getFinancePath(currentUser.uid, 'expenses') + '/' + expId + '/purchasedItems'; }
+
     function formatCurrency(value) {
         return 'R$ ' + parseFloat(value || 0).toFixed(2).replace('.', ',');
     }
@@ -34,11 +36,33 @@
     function formatDateTime(iso) {
         if(!iso) return '-';
         var d = new Date(iso);
-        return isNaN(d) ? '-' : d.toLocaleDateString('pt-BR') + ' ' + d.toLocaleTimeString('pt-BR', {hour: '2-digit', minute:'2-digit'});
+        return isNaN(d) ? '-' : d.toLocaleDateString('pt-BR');
+    }
+    
+    function formatFileName(name) {
+        if (name && name.length > 20) return name.substring(0, 10) + '...' + name.substring(name.length - 7);
+        return name || '';
+    }
+    
+    // Badge de Pagamento com Ícones
+    function getPaymentBadge(method) {
+        var icons = {
+            'pix': '<span class="text-teal-600 bg-teal-100 px-2 py-1 rounded text-xs flex items-center w-fit"><i class="bx bx-qr mr-1"></i> Pix</span>',
+            'credit': '<span class="text-blue-600 bg-blue-100 px-2 py-1 rounded text-xs flex items-center w-fit"><i class="bx bx-credit-card mr-1"></i> Crédito</span>',
+            'debit': '<span class="text-cyan-600 bg-cyan-100 px-2 py-1 rounded text-xs flex items-center w-fit"><i class="bx bx-credit-card-front mr-1"></i> Débito</span>',
+            'cash': '<span class="text-green-600 bg-green-100 px-2 py-1 rounded text-xs flex items-center w-fit"><i class="bx bx-money mr-1"></i> Dinheiro</span>',
+            'convenio': '<span class="text-purple-600 bg-purple-100 px-2 py-1 rounded text-xs flex items-center w-fit"><i class="bx bx-id-card mr-1"></i> Convênio</span>',
+            'transfer': '<span class="text-gray-600 bg-gray-100 px-2 py-1 rounded text-xs flex items-center w-fit"><i class="bx bxs-bank mr-1"></i> TED/DOC</span>'
+        };
+        return icons[method] || '<span class="text-gray-500 text-xs">-</span>';
+    }
+
+    function showNotification(message, type) {
+        console.log('[' + (type || 'INFO') + '] ' + message);
     }
 
     // ==================================================================
-    // 3. AUTENTICAÇÃO E INICIALIZAÇÃO
+    // 3. SISTEMA DE LOGIN BLINDADO
     // ==================================================================
     
     function initializeFirebase() {
@@ -57,16 +81,16 @@
                 userRef.once('value').then(function(snapshot) {
                     var profile = snapshot.val();
                     
-                    // Libera acesso para dentista ou admin master
+                    // Libera acesso para dentista ou admin master (hardcoded para segurança inicial)
                     if ((profile && profile.role === 'dentist') || user.email === 'admin@ts.com') {
                         currentUser = { uid: user.uid, email: user.email };
                         
-                        // Auto-correção do perfil admin
+                        // Auto-correção do perfil admin se não existir
                         if (!profile && user.email === 'admin@ts.com') {
                             userRef.set({ email: user.email, role: 'dentist', registeredAt: new Date().toISOString() });
                         }
                         
-                        // Carregamento Inicial de Dados para Cache
+                        // Carrega dados iniciais
                         loadInitialData();
                         showUI();
                     } else {
@@ -82,22 +106,19 @@
     }
     
     function loadInitialData() {
-        // Carrega pacientes para cache
+        // Carrega pacientes para cache local
         db.ref(getAdminPath(currentUser.uid, 'patients')).on('value', function(s) {
             allPatients = [];
             if(s.exists()) s.forEach(function(c) { var p = c.val(); p.id = c.key; allPatients.push(p); });
-            // Atualiza UI se estiver na tela de pacientes
             if(currentView === 'patients') renderPatientManager(document.getElementById('main-content'));
-            // Atualiza Dashboard KPI
-             if(document.getElementById('dash-pat')) document.getElementById('dash-pat').textContent = allPatients.length;
+            if(document.getElementById('dash-pat')) document.getElementById('dash-pat').textContent = allPatients.length;
         });
 
-        // Carrega estoque para cache
+        // Carrega estoque para cache local
         db.ref(getStockPath(currentUser.uid)).on('value', function(s) {
             stockItems = [];
             if(s.exists()) s.forEach(function(c) { var i = c.val(); i.id = c.key; stockItems.push(i); });
-            if(currentView === 'financials') renderStockView(); // Re-renderiza se estiver na aba
-             // Atualiza Dashboard KPI
+            if(currentView === 'financials') renderStockView(); 
             if(document.getElementById('dash-stk')) document.getElementById('dash-stk').textContent = stockItems.length;
         });
     }
@@ -106,7 +127,7 @@
         document.getElementById('login-screen').classList.remove('hidden');
         document.getElementById('app-container').classList.add('hidden');
         
-        // Reset de listeners
+        // Reset de listeners para evitar duplicação
         var oldForm = document.getElementById('auth-form');
         var newForm = oldForm.cloneNode(true);
         oldForm.parentNode.replaceChild(newForm, oldForm);
@@ -216,13 +237,15 @@
             </div>`;
             
         // Listeners de Finanças para KPIs
-        db.ref(getFinancePath(currentUser.uid, 'receivable')).on('value', s => {
-            let total = 0; s.forEach(x => { if(x.val().status !== 'Recebido') total += parseFloat(x.val().amount || 0); });
+        db.ref(getFinancePath(currentUser.uid, 'receivable')).on('value', function(s) {
+            let total = 0; 
+            if(s.exists()) s.forEach(function(x) { if(x.val().status !== 'Recebido') total += parseFloat(x.val().amount || 0); });
             if(document.getElementById('dash-rec')) document.getElementById('dash-rec').textContent = formatCurrency(total);
         });
         
-        db.ref(getFinancePath(currentUser.uid, 'expenses')).on('value', s => {
-            let total = 0; s.forEach(x => { if(x.val().status !== 'Pago') total += parseFloat(x.val().amount || 0); });
+        db.ref(getFinancePath(currentUser.uid, 'expenses')).on('value', function(s) {
+            let total = 0; 
+            if(s.exists()) s.forEach(function(x) { if(x.val().status !== 'Pago') total += parseFloat(x.val().amount || 0); });
             if(document.getElementById('dash-exp')) document.getElementById('dash-exp').textContent = formatCurrency(total);
         });
         
@@ -235,7 +258,10 @@
         };
     }
 
-    // --- GESTÃO DE PACIENTES ---
+    // ==================================================================
+    // 6. GESTÃO DE PACIENTES
+    // ==================================================================
+    
     function renderPatientManager(container) {
         container.innerHTML = `
             <div class="p-8 bg-white shadow-lg rounded-2xl">
@@ -251,6 +277,12 @@
                 </div>
             </div>`;
         
+        // Expondo globalmente para onclick
+        window.openPatientModal = openPatientModal;
+        window.deletePatient = deletePatient;
+        window.openJournal = openJournal;
+        window.openRecModal = openRecModal; // Permite cobrar direto da lista
+
         // Renderiza tabela com dados do cache
         var tbody = document.getElementById('patient-list-body');
         if(allPatients.length > 0) {
@@ -260,18 +292,18 @@
                         <td class="p-3 font-medium">${p.name}</td>
                         <td class="p-3">${p.treatmentType || '-'}</td>
                         <td class="p-3 text-right">
+                            <button onclick="openRecModal('${p.id}')" class="text-green-600 mr-3" title="Novo Tratamento/Cobrança"><i class='bx bx-money text-xl'></i></button>
                             <button onclick="openJournal('${p.id}')" class="text-cyan-600 mr-3" title="Prontuário"><i class='bx bx-book-heart text-xl'></i></button>
                             <button onclick="deletePatient('${p.id}')" class="text-red-500" title="Excluir"><i class='bx bx-trash text-xl'></i></button>
                         </td>
                     </tr>`;
             });
         } else {
-             tbody.innerHTML = '<tr><td colspan="3" class="p-4 text-center text-gray-400">Nenhum paciente.</td></tr>';
+             tbody.innerHTML = '<tr><td colspan="3" class="p-4 text-center text-gray-400">Nenhum paciente cadastrado.</td></tr>';
         }
     }
 
-    // Expondo funções globais para onclick
-    window.openPatientModal = function() {
+    function openPatientModal(p = null) { // Agora suporta edição se passarmos 'p'
         var html = `
             <form id="form-pat" class="space-y-3">
                 <input id="p-name" placeholder="Nome Completo" class="w-full border p-2 rounded" required>
@@ -292,14 +324,14 @@
             });
             closeModal();
         };
-    };
+    }
 
-    window.deletePatient = function(id) {
+    function deletePatient(id) {
         if(confirm("Tem certeza?")) db.ref(getAdminPath(currentUser.uid, 'patients') + '/' + id).remove();
-    };
+    }
 
     // --- DIÁRIO DO PACIENTE (INTEGRAÇÃO FINANCEIRA) ---
-    window.openJournal = function(id) {
+    function openJournal(id) {
         var p = allPatients.find(function(x){ return x.id === id; });
         if(!p) return;
         
@@ -307,10 +339,12 @@
             <div class="bg-blue-50 p-3 rounded mb-3 text-sm">
                 <b>Meta:</b> ${p.treatmentGoal || 'Não definido'}
             </div>
+            
             <div class="mb-4 border p-2 rounded max-h-40 overflow-y-auto">
                 <h5 class="font-bold text-xs text-gray-500 mb-1">PROCEDIMENTOS E MATERIAIS</h5>
                 <div id="journal-fin-list" class="text-sm">Carregando histórico...</div>
             </div>
+            
             <div id="chat-area" class="bg-gray-100 p-2 h-48 overflow-y-auto flex flex-col gap-2 mb-2 rounded"></div>
             <div class="flex gap-2">
                 <input id="chat-msg" class="flex-grow border p-2 rounded" placeholder="Evolução...">
@@ -327,20 +361,29 @@
             div.innerHTML = '';
             
             if(s.exists()) {
-                s.forEach(function(snap) {
-                    var item = snap.val();
-                    div.innerHTML += `<div class="border-b py-1 flex justify-between"><span>${item.description}</span> <span class="font-bold">${formatCurrency(item.amount)}</span></div>`;
-                    // Busca materiais (simplificado para não aninhar demais)
-                    db.ref(getAdminPath(currentUser.uid, `finance/receivable/${snap.key}/materials`)).once('value', function(mSnap) {
-                        if(mSnap.exists()) {
-                            var mats = [];
-                            mSnap.forEach(function(m) { mats.push(`${m.val().quantityUsed} ${m.val().name}`); });
-                            div.innerHTML += `<div class="text-xs text-gray-500 ml-2">Materiais: ${mats.join(', ')}</div>`;
-                        }
-                    });
-                });
+                var data = s.val();
+                for(var key in data) {
+                    var item = data[key];
+                    // Busca materiais usados neste serviço (assíncrono)
+                    var matsHTML = '';
+                    var matSnap = await db.ref(getFinancePath(currentUser.uid, 'receivable') + '/' + key + '/materials').once('value');
+                    if(matSnap.exists()) {
+                        matsHTML = '<div class="text-xs text-gray-500 ml-4">Materiais: ';
+                        matSnap.forEach(function(m) { matsHTML += m.val().quantityUsed + ' ' + m.val().unit + ' ' + m.val().name + ', '; });
+                        matsHTML += '</div>';
+                    }
+
+                    div.innerHTML += `
+                        <div class="border-b py-1">
+                            <div class="flex justify-between">
+                                <span>${item.description}</span>
+                                <span class="font-bold ${item.status === 'Recebido' ? 'text-green-600' : 'text-yellow-600'}">${formatCurrency(item.amount)}</span>
+                            </div>
+                            ${matsHTML}
+                        </div>`;
+                }
             } else {
-                div.innerHTML = '<i class="text-gray-400">Sem procedimentos.</i>';
+                div.innerHTML = '<i class="text-gray-400">Sem procedimentos registrados.</i>';
             }
         });
 
@@ -354,7 +397,7 @@
             var area = document.getElementById('chat-area');
             if(area) { area.appendChild(div); area.scrollTop = area.scrollHeight; }
         });
-    };
+    }
 
     window.sendChat = function(pid, author, txt) {
         var msg = txt || document.getElementById('chat-msg').value;
@@ -367,13 +410,13 @@
 
     window.askAI = async function(pid) {
         var p = allPatients.find(function(x){ return x.id === pid; });
-        var prompt = `Paciente: ${p.name}. Meta: ${p.treatmentGoal}. Sugira a próxima etapa.`;
-        var resp = await window.callGeminiAPI(prompt, "Gere sugestão clínica.");
+        var prompt = `Paciente: ${p.name}. Meta: ${p.treatmentGoal}. Sugira a próxima etapa clínica curta.`;
+        var resp = await window.callGeminiAPI(prompt, "Gere sugestão.");
         window.sendChat(pid, 'IA', resp);
     };
 
     // ==================================================================
-    // 6. FINANCEIRO E ESTOQUE
+    // 7. FINANCEIRO E ESTOQUE (INTEGRADO)
     // ==================================================================
 
     function renderFinancialManager(container) {
@@ -388,9 +431,23 @@
                 <div id="fin-content-area"></div>
             </div>`;
         
+        // Expor funções
         window.renderStockView = renderStockView;
         window.renderReceivablesView = renderReceivablesView;
         window.renderExpensesView = renderExpensesView;
+        
+        // Expor Ações
+        window.deleteTx = function(type, id) { if(confirm("Excluir?")) db.ref(getFinancePath(currentUser.uid, type) + '/' + id).remove(); };
+        window.deleteStock = function(id) { if(confirm("Remover?")) db.ref(getStockPath(currentUser.uid) + '/' + id).remove(); };
+        
+        window.settleTx = function(type, id) {
+            if(!confirm("Confirmar baixa?")) return;
+            var updates = { status: type === 'receivable' ? 'Recebido' : 'Pago' };
+            if(type === 'receivable') updates.receivedDate = new Date().toISOString();
+            else updates.paidDate = new Date().toISOString();
+            db.ref(getFinancePath(currentUser.uid, type) + '/' + id).update(updates);
+        };
+
         renderStockView(); 
     }
 
@@ -409,7 +466,7 @@
                 </table>
             </div>`;
         
-        // Usa o cache local de stockItems para renderizar rápido
+        // Usa Cache
         var tb = document.getElementById('stock-table-body');
         if(stockItems.length > 0) {
             stockItems.forEach(function(i) {
@@ -426,7 +483,7 @@
         }
     }
 
-    // --- RECEITAS (COM BAIXA AUTOMÁTICA E FORMA DE PAGAMENTO) ---
+    // --- RECEITAS ---
     function renderReceivablesView() {
         var div = document.getElementById('fin-content-area');
         div.innerHTML = `
@@ -441,9 +498,9 @@
             if(!list) return;
             list.innerHTML = '';
             if(s.exists()) {
-                s.forEach(function(snap) {
-                    var r = snap.val();
-                    var k = snap.key;
+                var data = s.val();
+                Object.keys(data).forEach(function(k) {
+                    var r = data[k];
                     var isPaid = r.status === 'Recebido';
                     var badge = isPaid ? `<span class="bg-green-100 text-green-800 text-xs px-2 rounded">Recebido</span>` : `<span class="bg-yellow-100 text-yellow-800 text-xs px-2 rounded">Aberto</span>`;
                     var action = isPaid ? '' : `<button onclick="settleTx('receivable', '${k}')" class="text-xs bg-green-500 text-white px-2 py-1 rounded hover:bg-green-600 ml-2" title="Receber"><i class='bx bx-check'></i></button>`;
@@ -451,7 +508,7 @@
                     list.innerHTML += `
                         <div class="p-3 border rounded flex justify-between items-center bg-white hover:shadow-sm transition">
                             <div>
-                                <div class="font-bold text-indigo-900">${r.patientName} <span class="text-xs font-normal text-gray-500">(${r.paymentMethod || '-'})</span></div>
+                                <div class="font-bold text-indigo-900">${r.patientName} ${getPaymentBadge(r.paymentMethod)}</div>
                                 <div class="text-xs text-gray-500">${r.description} - Venc: ${formatDateTime(r.dueDate)}</div>
                             </div>
                             <div class="text-right flex items-center gap-2">
@@ -482,9 +539,9 @@
             if(!list) return;
             list.innerHTML = '';
             if(s.exists()) {
-                s.forEach(function(snap) {
-                    var e = snap.val();
-                    var k = snap.key;
+                var data = s.val();
+                Object.keys(data).forEach(function(k) {
+                    var e = data[k];
                     var isPaid = e.status === 'Pago';
                     var badge = isPaid ? `<span class="bg-green-100 text-green-800 text-xs px-2 rounded">Pago</span>` : `<span class="bg-red-100 text-red-800 text-xs px-2 rounded">Aberto</span>`;
                     var action = isPaid ? '' : `<button onclick="settleTx('expenses', '${k}')" class="text-xs bg-blue-500 text-white px-2 py-1 rounded hover:bg-blue-600 ml-2" title="Pagar"><i class='bx bx-check'></i></button>`;
@@ -493,7 +550,7 @@
                         <div class="p-3 border rounded flex justify-between items-center bg-white hover:shadow-sm transition">
                             <div>
                                 <div class="font-bold text-gray-800">${e.supplier} <span class="text-xs font-normal text-gray-500">(${e.ref || 'S/Ref'})</span></div>
-                                <div class="text-xs text-gray-500">${e.description}</div>
+                                <div class="text-xs text-gray-500">${e.description} - ${getPaymentBadge(e.paymentMethod)}</div>
                             </div>
                             <div class="text-right flex items-center gap-2">
                                 ${badge}
@@ -508,39 +565,22 @@
         });
     }
 
-    // --- AÇÕES GLOBAIS ---
-    window.deleteTx = function(type, id) {
-        if(confirm("Excluir registro?")) db.ref(getFinancePath(currentUser.uid, type) + '/' + id).remove();
-    };
-    
-    window.settleTx = function(type, id) {
-        if(!confirm("Confirmar baixa?")) return;
-        var updates = { status: type === 'receivable' ? 'Recebido' : 'Pago' };
-        if(type === 'receivable') updates.receivedDate = new Date().toISOString();
-        else updates.paidDate = new Date().toISOString();
-        db.ref(getFinancePath(currentUser.uid, type) + '/' + id).update(updates);
-    };
-    
-    window.deleteStock = function(id) {
-        if(confirm("Remover item?")) db.ref(getStockPath(currentUser.uid) + '/' + id).remove();
-    };
-
-    // --- MODAIS DE CRIAÇÃO ---
+    // --- MODAIS DE CRIAÇÃO (COM FORMA DE PAGAMENTO) ---
     window.openRecModal = function(preselectPid) {
         var opts = allPatients.map(function(p){ return `<option value="${p.id}" ${preselectPid === p.id ? 'selected' : ''}>${p.name}</option>`; }).join('');
         var html = `
-            <form id="rec-form" class="grid gap-3">
-                <div><label class="text-xs font-bold text-gray-600">Paciente</label><select id="r-pat" class="w-full border p-2 rounded bg-white">${opts}</select></div>
-                <div><label class="text-xs font-bold text-gray-600">Descrição do Serviço</label><input id="r-desc" placeholder="Ex: Clareamento" class="w-full border p-2 rounded" required></div>
+            <form id="rec-form" class="grid gap-3 text-sm">
+                <div><label class="font-bold text-gray-600">Paciente</label><select id="r-pat" class="w-full border p-2 rounded bg-white">${opts}</select></div>
+                <div><label class="font-bold text-gray-600">Serviço</label><input id="r-desc" placeholder="Ex: Implante" class="w-full border p-2 rounded" required></div>
                 <div class="grid grid-cols-2 gap-2">
-                    <div><label class="text-xs font-bold text-gray-600">Valor (R$)</label><input id="r-val" type="number" step="0.01" class="w-full border p-2 rounded" required></div>
-                    <div><label class="text-xs font-bold text-gray-600">Vencimento</label><input id="r-date" type="date" class="w-full border p-2 rounded" required></div>
+                    <div><label class="font-bold text-gray-600">Valor (R$)</label><input id="r-val" type="number" step="0.01" class="w-full border p-2 rounded" required></div>
+                    <div><label class="font-bold text-gray-600">Vencimento</label><input id="r-date" type="date" class="w-full border p-2 rounded" required></div>
                 </div>
-                <div><label class="text-xs font-bold text-gray-600">Forma de Pagamento</label>
+                <div><label class="font-bold text-gray-600">Forma de Pagamento</label>
                 <select id="r-pay" class="w-full border p-2 rounded bg-white">
                     <option value="pix">Pix</option><option value="credit">Cartão Crédito</option><option value="debit">Cartão Débito</option><option value="cash">Dinheiro</option><option value="convenio">Convênio</option>
                 </select></div>
-                <button class="bg-indigo-600 text-white p-2 rounded font-bold mt-2">Salvar e Adicionar Materiais</button>
+                <button class="bg-indigo-600 text-white p-2 rounded font-bold mt-2 w-full">Salvar e Baixar Estoque</button>
             </form>`;
         openModal("Novo Serviço", html);
         
@@ -559,7 +599,7 @@
                 status: 'Aberto', registeredAt: new Date().toISOString()
             }).then(function() {
                 closeModal();
-                // AUTO-OPEN: Já abre a gestão de materiais
+                // AUTO-OPEN: Abre materiais
                 setTimeout(function() { window.manageMaterials(newRef.key); }, 300);
             });
         };
@@ -567,18 +607,18 @@
 
     window.openExpModal = function() {
         var html = `
-            <form id="exp-form" class="grid gap-3">
-                <div><label class="text-xs font-bold text-gray-600">Fornecedor</label><input id="e-sup" class="w-full border p-2 rounded" required></div>
-                <div><label class="text-xs font-bold text-gray-600">Descrição</label><input id="e-desc" class="w-full border p-2 rounded" required></div>
+            <form id="exp-form" class="grid gap-3 text-sm">
+                <div><label class="font-bold text-gray-600">Fornecedor</label><input id="e-sup" class="w-full border p-2 rounded" required></div>
+                <div><label class="font-bold text-gray-600">Descrição</label><input id="e-desc" class="w-full border p-2 rounded" required></div>
                 <div class="grid grid-cols-2 gap-2">
-                    <div><label class="text-xs font-bold text-gray-600">Valor (R$)</label><input id="e-val" type="number" step="0.01" class="w-full border p-2 rounded" required></div>
-                    <div><label class="text-xs font-bold text-gray-600">Nota Fiscal (Ref)</label><input id="e-ref" class="w-full border p-2 rounded"></div>
+                    <div><label class="font-bold text-gray-600">Valor (R$)</label><input id="e-val" type="number" step="0.01" class="w-full border p-2 rounded" required></div>
+                    <div><label class="font-bold text-gray-600">Nota Fiscal (Ref)</label><input id="e-ref" class="w-full border p-2 rounded"></div>
                 </div>
-                <div><label class="text-xs font-bold text-gray-600">Pagamento</label>
+                <div><label class="font-bold text-gray-600">Pagamento</label>
                 <select id="e-pay" class="w-full border p-2 rounded bg-white">
                     <option value="pix">Pix</option><option value="transfer">Transferência</option><option value="boleto">Boleto</option><option value="credit">Cartão Crédito</option>
                 </select></div>
-                <button class="bg-red-600 text-white p-2 rounded font-bold mt-2">Salvar e Lançar Itens</button>
+                <button class="bg-red-600 text-white p-2 rounded font-bold mt-2 w-full">Salvar e Lançar Itens</button>
             </form>`;
         openModal("Nova Despesa", html);
         
@@ -618,7 +658,6 @@
     
     // BAIXA (Receita)
     window.manageMaterials = function(recId) {
-        // Popula o select com os itens do cache (stockItems)
         var opts = stockItems.map(function(i){ return `<option value="${i.id}">${i.name} (${i.quantity} ${i.unit})</option>`; }).join('');
         
         var html = `
