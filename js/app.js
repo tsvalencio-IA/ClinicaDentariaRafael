@@ -1,5 +1,5 @@
 // ==================================================================
-// MÓDULO PRINCIPAL - DENTISTA INTELIGENTE (CORREÇÃO DE CHAT MISTURADO)
+// MÓDULO PRINCIPAL - DENTISTA INTELIGENTE (VERSÃO CORRIGIDA - CHAT & IA)
 // ==================================================================
 (function() {
     
@@ -11,7 +11,6 @@
     var currentView = 'dashboard';
     var isLoginMode = true; 
     var selectedFile = null;
-    var currentChatRef = null; // Variável para guardar a referência do chat aberto
     
     // CACHES
     var allPatients = []; 
@@ -59,14 +58,15 @@
         auth.onAuthStateChanged(function(user) {
             if (user) {
                 var userRef = db.ref('artifacts/' + appId + '/users/' + user.uid + '/profile');
-                userRef.once('value').then(function(s) {
-                    var p = s.val();
-                    if ((p && p.role === 'dentist') || user.email === 'admin@ts.com') {
+                userRef.once('value').then(function(snapshot) {
+                    var profile = snapshot.val();
+                    if ((profile && profile.role === 'dentist') || user.email === 'admin@ts.com') {
                         currentUser = { uid: user.uid, email: user.email };
-                        if (!p && user.email === 'admin@ts.com') {
-                            s.ref.set({ email: user.email, role: 'dentist', registeredAt: new Date().toISOString() });
+                        if (!profile && user.email === 'admin@ts.com') {
+                            userRef.set({ email: user.email, role: 'dentist', registeredAt: new Date().toISOString() });
                         }
-                        loadInitialData(); showUI();
+                        loadInitialData(); 
+                        showUI();
                     } else {
                         alert("Acesso restrito."); auth.signOut();
                     }
@@ -114,6 +114,7 @@
         document.getElementById('dash-exp').textContent = formatCurrency(totalExp);
     }
     
+    // --- UI AUTH ---
     function showLoginScreen() {
         document.getElementById('login-screen').classList.remove('hidden');
         document.getElementById('app-container').classList.add('hidden');
@@ -193,9 +194,9 @@
                     <div class="p-4 bg-red-100 rounded-lg"><p class="text-gray-600 text-sm uppercase font-bold">Pago</p><h3 class="text-2xl font-bold text-red-800" id="dash-exp">R$ 0,00</h3></div>
                 </div>
                 <div class="border p-4 rounded-xl bg-gray-50">
-                    <h3 class="font-bold text-indigo-800 mb-2">Instruções da IA</h3>
+                    <h3 class="font-bold text-indigo-800 mb-2">Instruções da IA (Brain)</h3>
                     <textarea id="brain-input" class="w-full p-2 border rounded text-sm" rows="3"></textarea>
-                    <button id="save-brain-btn" class="mt-2 bg-indigo-600 text-white px-4 py-1 rounded text-sm">Salvar</button>
+                    <button id="save-brain-btn" class="mt-2 bg-indigo-600 text-white px-4 py-1 rounded text-sm">Salvar Diretrizes</button>
                 </div>
             </div>`;
         updateKPIs();
@@ -238,7 +239,7 @@
                         </td>
                     </tr>`;
             });
-        } else { tbody.innerHTML = '<tr><td colspan="3" class="p-4 text-center text-gray-400">Nenhum paciente.</td></tr>'; }
+        } else { tbody.innerHTML = '<tr><td colspan="3" class="p-4 text-center text-gray-400">Nenhum paciente cadastrado.</td></tr>'; }
     }
 
     function openPatientModal(pid = null) {
@@ -247,16 +248,22 @@
         var html = `
             <form id="form-pat" class="grid grid-cols-2 gap-3 text-sm">
                 <input type="hidden" id="p-id" value="${isEdit ? p.id : ''}">
-                <div class="col-span-2"><label class="font-bold">Nome</label><input id="p-name" class="w-full border p-2 rounded" value="${isEdit ? p.name : ''}" required></div>
-                <div><label class="font-bold">Email</label><input id="p-email" class="w-full border p-2 rounded" value="${isEdit ? p.email : ''}"></div>
+                <div class="col-span-2"><label class="font-bold">Nome Completo</label><input id="p-name" class="w-full border p-2 rounded" value="${isEdit ? p.name : ''}" required></div>
+                <div><label class="font-bold">Email (Login)</label><input id="p-email" type="email" class="w-full border p-2 rounded" value="${isEdit ? p.email : ''}"></div>
                 <div><label class="font-bold">Telefone</label><input id="p-phone" class="w-full border p-2 rounded" value="${isEdit ? p.phone : ''}"></div>
                 <div><label class="font-bold">CPF</label><input id="p-cpf" class="w-full border p-2 rounded" value="${isEdit ? p.cpf : ''}"></div>
-                <div><label class="font-bold">Tratamento</label><select id="p-type" class="w-full border p-2 rounded"><option ${isEdit && p.treatmentType==='Geral'?'selected':''}>Geral</option><option ${isEdit && p.treatmentType==='Ortodontia'?'selected':''}>Ortodontia</option><option ${isEdit && p.treatmentType==='Implante'?'selected':''}>Implante</option></select></div>
+                <div><label class="font-bold">Tratamento</label>
+                <select id="p-type" class="w-full border p-2 rounded">
+                    <option ${isEdit && p.treatmentType==='Geral'?'selected':''}>Geral</option>
+                    <option ${isEdit && p.treatmentType==='Ortodontia'?'selected':''}>Ortodontia</option>
+                    <option ${isEdit && p.treatmentType==='Implante'?'selected':''}>Implante</option>
+                    <option ${isEdit && p.treatmentType==='Estética'?'selected':''}>Estética</option>
+                </select></div>
                 <div class="col-span-2"><label class="font-bold">Endereço</label><input id="p-address" class="w-full border p-2 rounded" value="${isEdit ? p.address : ''}"></div>
-                <div class="col-span-2"><label class="font-bold">Meta</label><textarea id="p-goal" class="w-full border p-2 rounded" rows="2">${isEdit ? p.treatmentGoal : ''}</textarea></div>
-                <button class="col-span-2 bg-green-600 text-white py-2 rounded font-bold">Salvar</button>
+                <div class="col-span-2"><label class="font-bold">Meta Clínica</label><textarea id="p-goal" class="w-full border p-2 rounded" rows="2">${isEdit ? p.treatmentGoal : ''}</textarea></div>
+                <button class="col-span-2 bg-green-600 text-white py-2 rounded font-bold">Salvar Ficha</button>
             </form>`;
-        openModal(isEdit ? 'Editar' : 'Novo', html, 'max-w-2xl');
+        openModal(isEdit ? 'Editar Paciente' : 'Novo Paciente', html, 'max-w-2xl');
         document.getElementById('form-pat').onsubmit = function(e) {
             e.preventDefault();
             var data = {
@@ -277,30 +284,25 @@
 
     function deletePatient(id) { if(confirm("Excluir?")) db.ref(getAdminPath(currentUser.uid, 'patients') + '/' + id).remove(); }
 
-    // --- PRONTUÁRIO (CORRIGIDO: CHAT ISOLADO) ---
+    // --- PRONTUÁRIO (CORRIGIDO: CHAT E BOTÃO IA) ---
     function openJournal(id) {
-        // 1. Limpa o listener anterior para não misturar conversas
-        if(currentChatRef) {
-            currentChatRef.off();
-        }
-
         var p = allPatients.find(function(x){ return x.id === id; });
         if(!p) return;
         
         var html = `
             <div class="bg-indigo-50 p-4 rounded-xl mb-4 text-sm flex justify-between">
-                <div><h3 class="font-bold text-indigo-900">${p.name}</h3><p>${p.email}</p></div>
-                <span class="bg-white px-2 py-1 rounded text-xs font-bold text-indigo-600">${p.treatmentType}</span>
+                <div><h3 class="font-bold text-indigo-900">${p.name}</h3><p class="text-indigo-700">${p.email || ''} | ${p.phone || ''}</p></div>
+                <span class="bg-white px-2 py-1 rounded text-xs font-bold text-indigo-600 shadow-sm">${p.treatmentType}</span>
             </div>
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div class="border p-3 rounded-xl bg-white"><h4 class="font-bold text-xs text-gray-500 mb-2">FINANCEIRO</h4><div id="journal-fin-list" class="text-sm h-80 overflow-y-auto space-y-2 pr-2">Carregando...</div></div>
-                <div class="border p-3 rounded-xl bg-white flex flex-col"><h4 class="font-bold text-xs text-gray-500 mb-2">CHAT</h4><div id="chat-area" class="bg-gray-50 p-2 h-64 overflow-y-auto flex flex-col gap-2 mb-2 rounded"></div>
+                <div class="border p-3 rounded-xl bg-white flex flex-col"><h4 class="font-bold text-xs text-gray-500 mb-2 uppercase">Histórico Financeiro</h4><div id="journal-fin-list" class="text-sm h-80 overflow-y-auto space-y-2 pr-2">Carregando...</div></div>
+                <div class="border p-3 rounded-xl bg-white flex flex-col"><h4 class="font-bold text-xs text-gray-500 mb-2 uppercase">Chat</h4><div id="chat-area" class="bg-gray-50 p-2 h-64 overflow-y-auto flex flex-col gap-2 mb-2 rounded"></div>
                     <div class="flex gap-2 items-center bg-gray-100 p-2 rounded-xl mt-auto">
                          <input type="file" id="chat-file" class="hidden" accept="image/*">
-                         <button onclick="document.getElementById('chat-file').click()" class="text-gray-500"><i class='bx bx-paperclip text-xl'></i></button>
+                         <button onclick="document.getElementById('chat-file').click()" class="text-gray-500 hover:text-indigo-600 p-2"><i class='bx bx-paperclip text-xl'></i></button>
                          <input id="chat-msg" class="flex-grow bg-transparent outline-none text-sm" placeholder="Mensagem...">
                          <button onclick="sendChat('${id}')" class="bg-indigo-600 text-white p-2 rounded-lg"><i class='bx bxs-send'></i></button>
-                         <button onclick="askAI('${id}')" class="bg-purple-600 text-white p-2 rounded-lg"><i class='bx bxs-magic-wand'></i></button>
+                         <button onclick="askAI('${id}')" class="bg-purple-600 text-white p-2 rounded-lg" title="IA"><i class='bx bxs-magic-wand'></i></button>
                     </div>
                     <div id="file-preview" class="text-xs text-gray-500 mt-1 hidden pl-2"></div>
                 </div>
@@ -314,9 +316,10 @@
 
         loadPatientServiceHistory(id);
 
-        // Carrega Chat e Salva Referência para desligar depois
-        currentChatRef = db.ref(getJournalPath(id));
-        currentChatRef.limitToLast(50).on('value', function(snap) {
+        var chatRef = db.ref(getJournalPath(id));
+        // .off() é crucial para limpar listeners antigos ao trocar de paciente
+        chatRef.off(); 
+        chatRef.limitToLast(50).on('value', function(snap) {
             var div = document.getElementById('chat-area');
             if(!div) return;
             div.innerHTML = '';
@@ -324,9 +327,12 @@
                 snap.forEach(function(c) {
                     var m = c.val();
                     var isMe = m.author === 'Dentista';
-                    var align = isMe ? 'self-end bg-indigo-600 text-white' : 'self-start bg-gray-100 border';
-                    var img = m.media ? `<br><a href="${m.media.url}" target="_blank"><img src="${m.media.url}" class="mt-1 rounded max-h-32"></a>` : '';
-                    div.innerHTML += `<div class="p-2 rounded-xl text-sm max-w-[90%] shadow-sm ${align}"><div class="font-bold text-[10px] opacity-80 uppercase">${m.author}</div><div>${m.text}</div>${img}</div>`;
+                    var align = isMe ? 'self-end bg-indigo-600 text-white' : 'self-start bg-gray-100 border text-gray-800';
+                    var imgHtml = m.media ? `<br><a href="${m.media.url}" target="_blank"><img src="${m.media.url}" class="mt-1 rounded-lg max-h-32 border border-white/30"></a>` : '';
+                    var el = document.createElement('div');
+                    el.className = `p-2 rounded-xl text-sm max-w-[90%] shadow-sm ${align}`;
+                    el.innerHTML = `<div class="font-bold text-[10px] opacity-80 mb-1 uppercase">${m.author}</div><div>${m.text}</div>${imgHtml}<div class="text-[10px] text-right opacity-60 mt-1">${formatDateTime(m.timestamp).split(' ')[1]}</div>`;
+                    div.appendChild(el);
                 });
                 div.scrollTop = div.scrollHeight;
             }
@@ -342,34 +348,77 @@
                 var data = s.val();
                 for(var key in data) {
                     var item = data[key];
-                    div.innerHTML += `<div class="border-b pb-2 mb-2 p-2 hover:bg-gray-50 rounded"><div class="flex justify-between"><span class="font-bold text-gray-700">${item.description}</span><span class="font-bold text-xs">${item.status}</span></div><div class="text-xs text-gray-400 flex justify-between"><span>${formatDateTime(item.dueDate).split(' ')[0]}</span><span>${formatCurrency(item.amount)}</span></div></div>`;
+                    div.innerHTML += `<div class="border-b pb-2 mb-2 p-2 hover:bg-gray-50 rounded"><div class="flex justify-between items-center"><span class="font-bold text-gray-700">${item.description}</span><span class="font-bold ${item.status==='Recebido'?'text-green-600':'text-yellow-600'} text-xs">${item.status}</span></div><div class="text-xs text-gray-400 flex justify-between mt-1"><span>${formatDateTime(item.dueDate).split(' ')[0]}</span><span>${formatCurrency(item.amount)}</span></div></div>`;
                 }
-            } else { div.innerHTML = '<i class="text-gray-400 text-xs">Vazio.</i>'; }
+            } else { div.innerHTML = '<i class="text-gray-400 text-xs">Sem registros.</i>'; }
         });
     }
 
-    window.sendChat = async function(pid) {
-        var txt = document.getElementById('chat-msg').value;
-        if(!txt && !selectedFile) return;
+    window.sendChat = async function(pid, author, txt) {
+        // Ajuste para suportar chamada direta ou via clique
+        var input = document.getElementById('chat-msg');
+        var msgText = txt || (input ? input.value : "");
+        
+        if(!msgText && !selectedFile) return;
+        
         var btn = document.querySelector('button[onclick*="sendChat"]');
-        btn.disabled = true;
+        if(btn) btn.disabled = true;
+
         var mediaData = null;
         if(selectedFile && window.uploadToCloudinary) {
-            try { mediaData = await window.uploadToCloudinary(selectedFile); } catch(e){ alert("Erro upload"); btn.disabled = false; return; }
+            try { mediaData = await window.uploadToCloudinary(selectedFile); } catch(e){ alert("Erro upload"); if(btn) btn.disabled = false; return; }
         }
-        db.ref(getJournalPath(pid)).push({ text: txt || (mediaData?"Anexo":""), author: 'Dentista', media: mediaData, timestamp: new Date().toISOString() });
-        document.getElementById('chat-msg').value = '';
-        document.getElementById('chat-file').value = '';
-        document.getElementById('file-preview').classList.add('hidden');
+        
+        var authName = author || 'Dentista';
+
+        db.ref(getJournalPath(pid)).push({
+            text: msgText || (mediaData ? "Anexo" : ""),
+            author: authName,
+            media: mediaData,
+            timestamp: new Date().toISOString()
+        });
+
+        if(input) input.value = '';
+        var fileIn = document.getElementById('chat-file');
+        if(fileIn) fileIn.value = '';
+        var prev = document.getElementById('file-preview');
+        if(prev) prev.classList.add('hidden');
         selectedFile = null;
-        btn.disabled = false;
+        if(btn) btn.disabled = false;
     };
 
+    // CORREÇÃO CRÍTICA DA IA (BOTÃO GIRANDO)
     window.askAI = async function(pid) {
         var p = allPatients.find(x => x.id === pid);
-        var prompt = `Paciente: ${p.name}. Histórico: ${p.treatmentGoal}. Resuma a evolução.`;
-        var resp = await window.callGeminiAPI(prompt, "Analise.");
-        window.sendChat(pid, 'IA', resp);
+        var btn = document.querySelector('button[title="IA"]');
+        var originalIcon = btn ? btn.innerHTML : '🤖';
+        
+        if(btn) {
+            btn.innerHTML = '<i class="bx bx-loader-alt bx-spin"></i>';
+            btn.disabled = true;
+        }
+
+        try {
+            // Busca histórico
+            var snaps = await db.ref(getJournalPath(pid)).limitToLast(5).once('value');
+            var hist = "";
+            snaps.forEach(s => hist += `${s.val().author}: ${s.val().text}\n`);
+
+            var prompt = `Paciente: ${p.name}. Histórico Recente:\n${hist}\n\nComo dentista sênior, qual a sugestão clínica ou resposta para o paciente?`;
+            var resp = await window.callGeminiAPI(prompt, "Analise.");
+            
+            // Envia resposta no chat
+            window.sendChat(pid, 'IA (Auto)', resp);
+            
+        } catch (e) {
+            console.error(e);
+            alert("Erro IA: " + e.message);
+        } finally {
+            if(btn) {
+                btn.innerHTML = originalIcon;
+                btn.disabled = false;
+            }
+        }
     };
 
     // --- FINANCEIRO ---
@@ -378,9 +427,9 @@
             <div class="p-8 bg-white shadow-lg rounded-2xl">
                 <h2 class="text-2xl font-bold text-indigo-800 mb-4">Financeiro & Estoque</h2>
                 <div class="flex border-b mb-4 overflow-x-auto">
-                    <button class="p-3 border-b-2 border-indigo-600 text-indigo-700 font-bold" onclick="renderStockView()">📦 Estoque</button>
-                    <button class="p-3 text-gray-500 hover:text-indigo-600" onclick="renderReceivablesView()">💰 Receitas</button>
-                    <button class="p-3 text-gray-500 hover:text-indigo-600" onclick="renderExpensesView()">💸 Despesas</button>
+                    <button class="p-3 border-b-2 border-indigo-600 text-indigo-700 font-bold whitespace-nowrap" onclick="renderStockView()">📦 Estoque</button>
+                    <button class="p-3 text-gray-500 hover:text-indigo-600 whitespace-nowrap" onclick="renderReceivablesView()">💰 Receitas</button>
+                    <button class="p-3 text-gray-500 hover:text-indigo-600 whitespace-nowrap" onclick="renderExpensesView()">💸 Despesas</button>
                 </div>
                 <div id="fin-content-area"></div>
             </div>`;
@@ -392,9 +441,10 @@
         window.deleteTx = function(type, id) { if(confirm("Excluir?")) db.ref(getFinancePath(currentUser.uid, type) + '/' + id).remove(); };
         window.deleteStock = function(id) { if(confirm("Remover?")) db.ref(getStockPath(currentUser.uid) + '/' + id).remove(); };
         window.settleTx = function(type, id) {
-            if(!confirm("Baixar?")) return;
+            if(!confirm("Confirmar baixa?")) return;
             var updates = { status: type === 'receivable' ? 'Recebido' : 'Pago' };
-            if(type === 'receivable') updates.receivedDate = new Date().toISOString(); else updates.paidDate = new Date().toISOString();
+            if(type === 'receivable') updates.receivedDate = new Date().toISOString();
+            else updates.paidDate = new Date().toISOString();
             db.ref(getFinancePath(currentUser.uid, type) + '/' + id).update(updates);
         };
         renderStockView(); 
@@ -402,7 +452,7 @@
 
     function renderStockView() {
         var div = document.getElementById('fin-content-area');
-        div.innerHTML = `<div class="flex justify-between mb-3"><h3 class="font-bold">Inventário</h3><button onclick="openStockModal()" class="bg-green-600 text-white px-3 py-1 rounded text-sm">+ Item</button></div><div id="stock-view" class="overflow-x-auto"><table class="w-full text-sm text-left"><thead class="bg-gray-50 text-gray-600"><tr><th class="p-2">Item</th><th class="p-2">Qtd</th><th class="p-2">Custo</th><th class="p-2">Ação</th></tr></thead><tbody id="stock-table-body"></tbody></table></div>`;
+        div.innerHTML = `<div class="flex justify-between mb-3"><h3 class="font-bold">Inventário</h3><button onclick="openStockModal()" class="bg-green-600 text-white px-3 py-1 rounded text-sm">+ Item Manual</button></div><div id="stock-view" class="overflow-x-auto"><table class="w-full text-sm text-left"><thead class="bg-gray-50 text-gray-600"><tr><th class="p-2">Item</th><th class="p-2">Qtd</th><th class="p-2">Custo</th><th class="p-2">Ação</th></tr></thead><tbody id="stock-table-body"></tbody></table></div>`;
         var tb = document.getElementById('stock-table-body');
         if(stockItems.length > 0) {
             stockItems.forEach(function(i) {
@@ -421,7 +471,7 @@
                 var isPaid = r.status === 'Recebido';
                 var badge = isPaid ? `<span class="bg-green-100 text-green-800 text-xs px-2 rounded">Recebido</span>` : `<span class="bg-yellow-100 text-yellow-800 text-xs px-2 rounded">Aberto</span>`;
                 var action = isPaid ? '' : `<button onclick="settleTx('receivable', '${k}')" class="text-xs bg-green-500 text-white px-2 py-1 rounded ml-2"><i class='bx bx-check'></i></button>`;
-                list.innerHTML += `<div class="p-3 border rounded flex justify-between items-center bg-white hover:shadow-sm"><div><div class="font-bold text-indigo-900">${r.patientName} ${getPaymentBadge(r.paymentMethod)}</div><div class="text-xs text-gray-500">${r.description}</div></div><div class="text-right flex items-center gap-2">${badge}<div class="font-bold text-green-600 ml-2">${formatCurrency(r.amount)}</div><button onclick="manageMaterials('${k}')" class="text-xs bg-yellow-200 text-yellow-800 px-2 py-1 rounded" title="Materiais"><i class='bx bx-package'></i></button>${action}<button onclick="deleteTx('receivable', '${k}')" class="text-red-400"><i class='bx bx-trash'></i></button></div></div>`;
+                list.innerHTML += `<div class="p-3 border rounded flex justify-between items-center bg-white hover:shadow-sm"><div><div class="font-bold text-indigo-900">${r.patientName} ${getPaymentBadge(r.paymentMethod)}</div><div class="text-xs text-gray-500">${r.description} - Venc: ${formatDateTime(r.dueDate).split(' ')[0]}</div></div><div class="text-right flex items-center gap-2">${badge}<div class="font-bold text-green-600 ml-2">${formatCurrency(r.amount)}</div><button onclick="manageMaterials('${k}')" class="text-xs bg-yellow-200 text-yellow-800 px-2 py-1 rounded" title="Baixa"><i class='bx bx-package'></i></button>${action}<button onclick="deleteTx('receivable', '${k}')" class="text-red-400"><i class='bx bx-trash'></i></button></div></div>`;
             });
         } else { list.innerHTML = '<p class="text-center text-gray-400">Vazio.</p>'; }
     }
@@ -436,7 +486,7 @@
                 var isPaid = e.status === 'Pago';
                 var badge = isPaid ? `<span class="bg-green-100 text-green-800 text-xs px-2 rounded">Pago</span>` : `<span class="bg-red-100 text-red-800 text-xs px-2 rounded">Aberto</span>`;
                 var action = isPaid ? '' : `<button onclick="settleTx('expenses', '${k}')" class="text-xs bg-blue-500 text-white px-2 py-1 rounded ml-2"><i class='bx bx-check'></i></button>`;
-                list.innerHTML += `<div class="p-3 border rounded flex justify-between items-center bg-white hover:shadow-sm"><div><div class="font-bold text-gray-800">${e.supplier}</div><div class="text-xs text-gray-500">${e.description} - ${getPaymentBadge(e.paymentMethod)}</div></div><div class="text-right flex items-center gap-2">${badge}<div class="font-bold text-red-600 ml-2">${formatCurrency(e.amount)}</div><button onclick="managePurchaseItems('${k}')" class="text-xs bg-green-200 text-green-800 px-2 py-1 rounded" title="Itens"><i class='bx bx-cart-add'></i></button>${action}<button onclick="deleteTx('expenses', '${k}')" class="text-red-400"><i class='bx bx-trash'></i></button></div></div>`;
+                list.innerHTML += `<div class="p-3 border rounded flex justify-between items-center bg-white hover:shadow-sm"><div><div class="font-bold text-gray-800">${e.supplier}</div><div class="text-xs text-gray-500">${e.description} - ${getPaymentBadge(e.paymentMethod)}</div></div><div class="text-right flex items-center gap-2">${badge}<div class="font-bold text-red-600 ml-2">${formatCurrency(e.amount)}</div><button onclick="managePurchaseItems('${k}')" class="text-xs bg-green-200 text-green-800 px-2 py-1 rounded" title="Entrada"><i class='bx bx-cart-add'></i></button>${action}<button onclick="deleteTx('expenses', '${k}')" class="text-red-400"><i class='bx bx-trash'></i></button></div></div>`;
             });
         } else { list.innerHTML = '<p class="text-center text-gray-400">Vazio.</p>'; }
     }
@@ -509,7 +559,7 @@
 
     function openModal(title, html, maxW) {
         var m = document.getElementById('app-modal');
-        m.querySelector('.modal-content').className = 'modal-content w-full ' + (maxW || 'max-w-md');
+        m.querySelector('.modal-content').className = 'modal-content w-full ' + (maxWidth || 'max-w-md');
         document.getElementById('modal-title').textContent = title;
         document.getElementById('modal-body').innerHTML = html;
         m.classList.remove('hidden'); m.classList.add('flex');
