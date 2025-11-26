@@ -1,5 +1,5 @@
 // ==================================================================
-// MÓDULO PORTAL DO PACIENTE (VERSÃO SÊNIOR FINAL)
+// MÓDULO PORTAL DO PACIENTE (CORRIGIDO)
 // ==================================================================
 (function() {
     var config = window.AppConfig;
@@ -90,7 +90,7 @@
         var journalRef = db.ref('artifacts/' + appId + '/patients/' + myProfile.id + '/journal');
         
         journalRef.on('value', function(snap) {
-            timelineDiv.innerHTML = '';
+            timelineDiv.innerHTML = ''; // LIMPEZA CRÍTICA
             if (snap.exists()) {
                 snap.forEach(function(c) {
                     var msg = c.val();
@@ -107,7 +107,6 @@
                     el.innerHTML = `<div class="font-bold text-[10px] opacity-80 mb-1 uppercase">${msg.author}</div><div>${msg.text}</div>${mediaHtml}`;
                     timelineDiv.appendChild(el);
                 });
-                // Rola para o final
                 var main = document.querySelector('main');
                 main.scrollTop = main.scrollHeight;
             }
