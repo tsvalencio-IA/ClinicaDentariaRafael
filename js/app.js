@@ -1,9 +1,10 @@
 // ==================================================================
-// MÓDULO PRINCIPAL - DENTISTA INTELIGENTE (RESTAURAÇÃO FUNCIONAL)
+// MÓDULO PRINCIPAL - DENTISTA INTELIGENTE (VERSÃO FINAL INTEGRAL)
 // ==================================================================
 (function() {
     
-    // 1. CONFIGURAÇÕES
+    // 1. CONFIGURAÇÕES E ESTADO GLOBAL
+    // Usamos 'var' para blindar contra erros de redeclaração no navegador
     var config = window.AppConfig;
     var appId = config ? config.APP_ID : 'dentista-inteligente-app';
     
@@ -11,16 +12,16 @@
     var currentUser = null;
     var currentView = 'dashboard';
     var isLoginMode = true; 
-    var selectedFile = null;
+    var selectedFile = null; // Para upload de arquivos no chat
     
-    // CACHES DE DADOS
+    // CACHES DE DADOS (Inicializados vazios)
     var allPatients = []; 
     var receivables = []; 
     var stockItems = []; 
     var expenses = []; 
     
     // ==================================================================
-    // 2. UTILITÁRIOS
+    // 2. UTILITÁRIOS E CAMINHOS
     // ==================================================================
     
     function getAdminPath(uid, path) { return 'artifacts/' + appId + '/users/' + uid + '/' + path; }
@@ -28,11 +29,14 @@
     function getFinancePath(uid, type) { return getAdminPath(uid, 'finance/' + type); }
     function getJournalPath(pid) { return 'artifacts/' + appId + '/patients/' + pid + '/journal'; }
     
-    // Helpers aninhados
-    function getRecMatPath(recId) { return getFinancePath(currentUser.uid, 'receivable') + '/' + recId + '/materials'; }
-    function getExpItemsPath(expId) { return getFinancePath(currentUser.uid, 'expenses') + '/' + expId + '/purchasedItems'; }
+    // Helpers para caminhos aninhados
+    function getReceivableMaterialsPath(recId) { return getFinancePath(currentUser.uid, 'receivable') + '/' + recId + '/materials'; }
+    function getExpensePurchasedItemsPath(expId) { return getFinancePath(currentUser.uid, 'expenses') + '/' + expId + '/purchasedItems'; }
 
-    function formatCurrency(value) { return 'R$ ' + parseFloat(value || 0).toFixed(2).replace('.', ','); }
+    function formatCurrency(value) {
+        return 'R$ ' + parseFloat(value || 0).toFixed(2).replace('.', ',');
+    }
+
     function formatDateTime(iso) {
         if(!iso) return '-';
         var d = new Date(iso);
@@ -43,7 +47,8 @@
         if (name && name.length > 20) return name.substring(0, 10) + '...' + name.substring(name.length - 7);
         return name || '';
     }
-
+    
+    // Badge de Pagamento com Ícones
     function getPaymentBadge(method) {
         var icons = {
             'pix': '<span class="text-teal-600 bg-teal-100 px-2 py-1 rounded text-xs flex items-center w-fit"><i class="bx bx-qr mr-1"></i> Pix</span>',
@@ -56,12 +61,19 @@
         return icons[method] || '<span class="text-gray-500 text-xs">-</span>';
     }
 
+    function showNotification(message, type) {
+        console.log('[' + (type || 'INFO') + '] ' + message);
+        // Aqui pode ser conectada uma lib de Toast futura
+    }
+
     // ==================================================================
-    // 3. CORE E LOGIN
+    // 3. SISTEMA DE LOGIN BLINDADO
     // ==================================================================
     
     function initializeFirebase() {
-        if (!firebase.apps.length) firebase.initializeApp(config.firebaseConfig);
+        if (!firebase.apps.length) {
+            firebase.initializeApp(config.firebaseConfig);
+        }
         db = firebase.database();
         auth = firebase.auth();
         setupAuth();
@@ -74,11 +86,15 @@
                 userRef.once('value').then(function(snapshot) {
                     var profile = snapshot.val();
                     
+                    // Libera acesso para dentista ou admin master
                     if ((profile && profile.role === 'dentist') || user.email === 'admin@ts.com') {
                         currentUser = { uid: user.uid, email: user.email };
+                        
+                        // Auto-correção: Cria perfil se não existir
                         if (!profile && user.email === 'admin@ts.com') {
                             userRef.set({ email: user.email, role: 'dentist', registeredAt: new Date().toISOString() });
                         }
+                        
                         loadInitialData(); 
                         showUI();
                     } else {
@@ -94,16 +110,15 @@
     }
     
     function loadInitialData() {
-        // Carrega Pacientes
+        // 1. Pacientes
         db.ref(getAdminPath(currentUser.uid, 'patients')).on('value', function(s) {
             allPatients = [];
             if(s.exists()) s.forEach(function(c) { var p = c.val(); p.id = c.key; allPatients.push(p); });
             updateKPIs();
-            // Se estiver na tela, atualiza
             if(currentView === 'patients') renderPatientManager(document.getElementById('main-content'));
         });
 
-        // Carrega Estoque
+        // 2. Estoque
         db.ref(getStockPath(currentUser.uid)).on('value', function(s) {
             stockItems = [];
             if(s.exists()) s.forEach(function(c) { var i = c.val(); i.id = c.key; stockItems.push(i); });
@@ -111,7 +126,7 @@
             if(currentView === 'financials' && document.getElementById('stock-view')) renderStockView();
         });
         
-        // Carrega Receitas
+        // 3. Receitas
         db.ref(getFinancePath(currentUser.uid, 'receivable')).on('value', function(s) {
             receivables = [];
             if(s.exists()) s.forEach(function(c) { var r = c.val(); r.id = c.key; receivables.push(r); });
@@ -119,7 +134,7 @@
             if(currentView === 'financials' && document.getElementById('receivables-view')) renderReceivablesView();
         });
         
-        // Carrega Despesas
+        // 4. Despesas
         db.ref(getFinancePath(currentUser.uid, 'expenses')).on('value', function(s) {
             expenses = [];
             if(s.exists()) s.forEach(function(c) { var e = c.val(); e.id = c.key; expenses.push(e); });
@@ -134,10 +149,16 @@
         document.getElementById('dash-pat').textContent = allPatients.length;
         document.getElementById('dash-stk').textContent = stockItems.length;
         
-        var totalRec = receivables.reduce(function(acc, r) { return r.status === 'Recebido' ? acc + parseFloat(r.amount||0) : acc; }, 0);
+        // KPI Faturamento: Soma tudo que foi Recebido
+        var totalRec = receivables.reduce(function(acc, r) { 
+            return r.status === 'Recebido' ? acc + parseFloat(r.amount||0) : acc; 
+        }, 0);
         document.getElementById('dash-rec').textContent = formatCurrency(totalRec);
         
-        var totalExp = expenses.reduce(function(acc, e) { return e.status === 'Pago' ? acc + parseFloat(e.amount||0) : acc; }, 0);
+        // KPI Despesas: Soma tudo que foi Pago
+        var totalExp = expenses.reduce(function(acc, e) { 
+            return e.status === 'Pago' ? acc + parseFloat(e.amount||0) : acc; 
+        }, 0);
         document.getElementById('dash-exp').textContent = formatCurrency(totalExp);
     }
     
@@ -233,10 +254,10 @@
             <div class="p-8 bg-white shadow-2xl rounded-2xl border border-indigo-100">
                 <h2 class="text-3xl font-bold text-indigo-800 mb-6"><i class='bx bxs-dashboard'></i> Visão Geral</h2>
                 <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-                    <div class="p-4 bg-indigo-100 rounded-lg"><p class="text-gray-600 text-sm uppercase font-bold">Pacientes</p><h3 class="text-3xl font-bold text-indigo-800" id="dash-pat">0</h3></div>
+                    <div class="p-4 bg-indigo-100 rounded-lg"><p class="text-gray-600 text-sm uppercase font-bold">Pacientes</p><h3 class="text-2xl font-bold text-indigo-800" id="dash-pat">0</h3></div>
                     <div class="p-4 bg-green-100 rounded-lg"><p class="text-gray-600 text-sm uppercase font-bold">Estoque</p><h3 class="text-3xl font-bold text-green-800" id="dash-stk">0</h3></div>
-                    <div class="p-4 bg-yellow-100 rounded-lg"><p class="text-gray-600 text-sm uppercase font-bold">Faturamento (Recebido)</p><h3 class="text-3xl font-bold text-yellow-800" id="dash-rec">R$ 0,00</h3></div>
-                    <div class="p-4 bg-red-100 rounded-lg"><p class="text-gray-600 text-sm uppercase font-bold">Despesas (Pagas)</p><h3 class="text-3xl font-bold text-red-800" id="dash-exp">R$ 0,00</h3></div>
+                    <div class="p-4 bg-yellow-100 rounded-lg"><p class="text-gray-600 text-sm uppercase font-bold">Faturamento (Recebido)</p><h3 class="text-2xl font-bold text-yellow-800" id="dash-rec">R$ 0,00</h3></div>
+                    <div class="p-4 bg-red-100 rounded-lg"><p class="text-gray-600 text-sm uppercase font-bold">Despesas (Pagas)</p><h3 class="text-2xl font-bold text-red-800" id="dash-exp">R$ 0,00</h3></div>
                 </div>
                 <div class="border p-4 rounded-xl bg-gray-50">
                     <h3 class="font-bold text-indigo-800 mb-2">Instruções da IA (Brain)</h3>
@@ -271,12 +292,12 @@
                 </div>
             </div>`;
         
-        // GARANTINDO QUE AS FUNÇÕES GLOBAIS ESTÃO EXPOSTAS
+        // Expondo funções globais para os botões do HTML
         window.openPatientModal = openPatientModal;
         window.deletePatient = deletePatient;
-        window.editPatient = editPatient;
         window.openJournal = openJournal;
         window.openRecModal = openRecModal;
+        window.editPatient = openPatientModal; // Reutiliza o modal de criação para edição
 
         var tbody = document.getElementById('patient-list-body');
         if(allPatients.length > 0) {
@@ -345,11 +366,6 @@
         };
     }
 
-    // Função Helper para Editar (agora existe)
-    function editPatient(id) {
-        openPatientModal(id);
-    }
-
     function deletePatient(id) {
         if(confirm("Excluir paciente?")) db.ref(getAdminPath(currentUser.uid, 'patients') + '/' + id).remove();
     }
@@ -408,7 +424,7 @@
 
         // Carrega Chat
         var chatRef = db.ref(getJournalPath(id));
-        chatRef.on('value', function(snap) {
+        chatRef.limitToLast(50).on('value', function(snap) {
             var div = document.getElementById('chat-area');
             if(!div) return;
             div.innerHTML = '';
@@ -416,7 +432,7 @@
                 snap.forEach(function(c) {
                     var m = c.val();
                     var isMe = m.author === 'Dentista';
-                    var align = isMe ? 'self-end bg-indigo-600 text-white' : 'self-start bg-gray-100 border';
+                    var align = isMe ? 'self-end bg-indigo-600 text-white' : 'self-start bg-gray-100 text-gray-800 border';
                     
                     var mediaHtml = '';
                     if(m.media && m.media.url) {
@@ -449,7 +465,7 @@
                 for(var key in data) {
                     var item = data[key];
                     var matsHTML = '';
-                    // Busca materiais usados
+                    // Busca materiais usados (Referencia o caminho correto: receivables/id/materials)
                     var matSnap = await db.ref(getFinancePath(currentUser.uid, 'receivable') + '/' + key + '/materials').once('value');
                     if(matSnap.exists()) {
                         var arr = [];
@@ -668,7 +684,7 @@
                 </select></div>
                 <button class="bg-indigo-600 text-white p-2 rounded font-bold mt-2 w-full">Salvar e Adicionar Materiais</button>
             </form>`;
-        openModal("Novo Serviço", html);
+        openModal("Novo Procedimento", html);
         
         document.getElementById('rec-form').onsubmit = function(e) {
             e.preventDefault();
@@ -774,7 +790,11 @@
         var ref = db.ref(getAdminPath(currentUser.uid, `finance/expenses/${expId}/purchasedItems`));
         ref.on('value', function(s) {
             var d = document.getElementById('pur-list');
-            if(d) { d.innerHTML = ''; if(s.exists()) s.forEach(function(x){ d.innerHTML += `<div>+ ${x.val().quantityPurchased} ${x.val().unit} ${x.val().name}</div>`; }); }
+            if(d) {
+                d.innerHTML = '';
+                if(s.exists()) s.forEach(function(x){ d.innerHTML += `<div class="flex justify-between border-b py-1"><span>${x.val().name}</span> <b class="text-green-600">+${x.val().quantityPurchased} ${x.val().unit}</b></div>`; });
+                else d.innerHTML = '<span class="text-gray-400 italic">Nada lançado.</span>';
+            }
         });
 
         document.getElementById('p-ok').onclick = async function() {
@@ -790,12 +810,13 @@
     };
 
     // --- UTILS DE MODAL ---
-    function openModal(title, html, maxWidth) {
+    function openModal(title, html, maxW) {
         var m = document.getElementById('app-modal');
-        m.querySelector('.modal-content').className = 'modal-content w-full ' + (maxWidth || 'max-w-md');
+        m.querySelector('.modal-content').className = 'modal-content w-full ' + (maxW || 'max-w-md');
         document.getElementById('modal-title').textContent = title;
         document.getElementById('modal-body').innerHTML = html;
-        m.classList.remove('hidden'); m.classList.add('flex');
+        m.classList.remove('hidden');
+        m.classList.add('flex');
     }
     
     function closeModal() {
