@@ -1,50 +1,41 @@
 // ==================================================================
-// MÓDULO PRINCIPAL - DENTISTA INTELIGENTE (VERSÃO SÊNIOR INTEGRADA)
+// MÓDULO PRINCIPAL - DENTISTA INTELIGENTE (VERSÃO 100% INTEGRAL)
 // ==================================================================
 (function() {
     
-    // 1. CONFIGURAÇÕES E ESTADO
-    // Usamos var para garantir que o script não trave se for recarregado
+    // 1. CONFIGURAÇÕES
     var config = window.AppConfig;
     var appId = config ? config.APP_ID : 'dentista-inteligente-app';
     
+    // ESTADO (VAR para estabilidade)
     var db, auth;
     var currentUser = null;
     var currentView = 'dashboard';
     var isLoginMode = true; 
     
-    // Caches de Dados (Inicializados vazios)
+    // CACHES DE DADOS
     var allPatients = []; 
     var receivables = []; 
     var stockItems = []; 
     var expenses = []; 
     
     // ==================================================================
-    // 2. UTILITÁRIOS E FORMATAÇÃO
+    // 2. UTILITÁRIOS
     // ==================================================================
     
     function getAdminPath(uid, path) { return 'artifacts/' + appId + '/users/' + uid + '/' + path; }
     function getStockPath(uid) { return getAdminPath(uid, 'stock'); }
     function getFinancePath(uid, type) { return getAdminPath(uid, 'finance/' + type); }
-    function getReceivableMaterialsPath(recId) { return getFinancePath(currentUser.uid, 'receivable') + '/' + recId + '/materials'; }
-    function getExpensePurchasedItemsPath(expId) { return getFinancePath(currentUser.uid, 'expenses') + '/' + expId + '/purchasedItems'; }
+    function getJournalPath(pid) { return 'artifacts/' + appId + '/patients/' + pid + '/journal'; }
 
-    function formatCurrency(value) {
-        return 'R$ ' + parseFloat(value || 0).toFixed(2).replace('.', ',');
-    }
+    function formatCurrency(value) { return 'R$ ' + parseFloat(value || 0).toFixed(2).replace('.', ','); }
 
     function formatDateTime(iso) {
         if(!iso) return '-';
         var d = new Date(iso);
-        return isNaN(d) ? '-' : d.toLocaleDateString('pt-BR');
+        return isNaN(d) ? '-' : d.toLocaleDateString('pt-BR') + ' ' + d.toLocaleTimeString('pt-BR', {hour: '2-digit', minute:'2-digit'});
     }
     
-    function formatFileName(name) {
-        if (name && name.length > 20) return name.substring(0, 10) + '...' + name.substring(name.length - 7);
-        return name || '';
-    }
-    
-    // Badge de Pagamento com Ícones
     function getPaymentBadge(method) {
         var icons = {
             'pix': '<span class="text-teal-600 bg-teal-100 px-2 py-1 rounded text-xs flex items-center w-fit"><i class="bx bx-qr mr-1"></i> Pix</span>',
@@ -52,49 +43,37 @@
             'debit': '<span class="text-cyan-600 bg-cyan-100 px-2 py-1 rounded text-xs flex items-center w-fit"><i class="bx bx-credit-card-front mr-1"></i> Débito</span>',
             'cash': '<span class="text-green-600 bg-green-100 px-2 py-1 rounded text-xs flex items-center w-fit"><i class="bx bx-money mr-1"></i> Dinheiro</span>',
             'convenio': '<span class="text-purple-600 bg-purple-100 px-2 py-1 rounded text-xs flex items-center w-fit"><i class="bx bx-id-card mr-1"></i> Convênio</span>',
-            'transfer': '<span class="text-gray-600 bg-gray-100 px-2 py-1 rounded text-xs flex items-center w-fit"><i class="bx bxs-bank mr-1"></i> TED/DOC</span>'
+            'transfer': '<span class="text-gray-600 bg-gray-100 px-2 py-1 rounded text-xs flex items-center w-fit"><i class="bx bxs-bank mr-1"></i> Transf.</span>'
         };
         return icons[method] || '<span class="text-gray-500 text-xs">-</span>';
     }
 
-    function showNotification(message, type) {
-        console.log('[' + (type || 'INFO') + '] ' + message);
-    }
-
     // ==================================================================
-    // 3. SISTEMA DE LOGIN BLINDADO
+    // 3. CORE E LOGIN
     // ==================================================================
     
     function initializeFirebase() {
-        if (!firebase.apps.length) {
-            firebase.initializeApp(config.firebaseConfig);
-        }
+        if (!firebase.apps.length) firebase.initializeApp(config.firebaseConfig);
         db = firebase.database();
         auth = firebase.auth();
-        setupAuthStateListener();
+        setupAuth();
     }
 
-    function setupAuthStateListener() {
+    function setupAuth() {
         auth.onAuthStateChanged(function(user) {
             if (user) {
-                var userRef = db.ref('artifacts/' + appId + '/users/' + user.uid + '/profile');
-                userRef.once('value').then(function(snapshot) {
-                    var profile = snapshot.val();
-                    
-                    // Libera acesso para dentista ou admin master (hardcoded para segurança inicial)
-                    if ((profile && profile.role === 'dentist') || user.email === 'admin@ts.com') {
+                // Verifica perfil
+                db.ref('artifacts/' + appId + '/users/' + user.uid + '/profile').once('value').then(function(s) {
+                    var p = s.val();
+                    if ((p && p.role === 'dentist') || user.email === 'admin@ts.com') {
                         currentUser = { uid: user.uid, email: user.email };
-                        
-                        // Auto-correção do perfil admin se não existir
-                        if (!profile && user.email === 'admin@ts.com') {
-                            userRef.set({ email: user.email, role: 'dentist', registeredAt: new Date().toISOString() });
+                        if (!p && user.email === 'admin@ts.com') { // Auto-fix admin
+                            s.ref.set({ email: user.email, role: 'dentist', registeredAt: new Date().toISOString() });
                         }
-                        
-                        // Carrega dados iniciais
-                        loadInitialData();
+                        loadInitialData(); // Carrega dados para memória
                         showUI();
                     } else {
-                        alert("Acesso restrito a dentistas.");
+                        alert("Acesso restrito.");
                         auth.signOut();
                     }
                 });
@@ -106,42 +85,70 @@
     }
     
     function loadInitialData() {
-        // Carrega pacientes para cache local
+        // Carrega TUDO para garantir KPIs rápidos e evitar telas vazias
+        
+        // 1. Pacientes
         db.ref(getAdminPath(currentUser.uid, 'patients')).on('value', function(s) {
             allPatients = [];
             if(s.exists()) s.forEach(function(c) { var p = c.val(); p.id = c.key; allPatients.push(p); });
+            updateKPIs();
             if(currentView === 'patients') renderPatientManager(document.getElementById('main-content'));
-            if(document.getElementById('dash-pat')) document.getElementById('dash-pat').textContent = allPatients.length;
         });
 
-        // Carrega estoque para cache local
+        // 2. Estoque
         db.ref(getStockPath(currentUser.uid)).on('value', function(s) {
             stockItems = [];
             if(s.exists()) s.forEach(function(c) { var i = c.val(); i.id = c.key; stockItems.push(i); });
-            if(currentView === 'financials') renderStockView(); 
-            if(document.getElementById('dash-stk')) document.getElementById('dash-stk').textContent = stockItems.length;
+            updateKPIs();
+            // Se estiver na tela financeira e na aba estoque, atualiza
+            if(currentView === 'financials' && document.getElementById('stock-view')) renderStockView();
         });
+        
+        // 3. Receitas
+        db.ref(getFinancePath(currentUser.uid, 'receivable')).on('value', function(s) {
+            receivables = [];
+            if(s.exists()) s.forEach(function(c) { var r = c.val(); r.id = c.key; receivables.push(r); });
+            updateKPIs();
+            if(currentView === 'financials' && document.getElementById('receivables-view')) renderReceivablesView();
+        });
+        
+        // 4. Despesas
+        db.ref(getFinancePath(currentUser.uid, 'expenses')).on('value', function(s) {
+            expenses = [];
+            if(s.exists()) s.forEach(function(c) { var e = c.val(); e.id = c.key; expenses.push(e); });
+            updateKPIs();
+            if(currentView === 'financials' && document.getElementById('expenses-view')) renderExpensesView();
+        });
+    }
+
+    function updateKPIs() {
+        if(!document.getElementById('dash-pat')) return; // Só roda se estiver no dashboard
+        
+        document.getElementById('dash-pat').textContent = allPatients.length;
+        document.getElementById('dash-stk').textContent = stockItems.length;
+        
+        var totalRec = receivables.reduce(function(acc, r) { return r.status !== 'Recebido' ? acc + parseFloat(r.amount||0) : acc; }, 0);
+        document.getElementById('dash-rec').textContent = formatCurrency(totalRec);
+        
+        var totalExp = expenses.reduce(function(acc, e) { return e.status !== 'Pago' ? acc + parseFloat(e.amount||0) : acc; }, 0);
+        document.getElementById('dash-exp').textContent = formatCurrency(totalExp);
     }
     
     function showLoginScreen() {
         document.getElementById('login-screen').classList.remove('hidden');
         document.getElementById('app-container').classList.add('hidden');
         
-        // Reset de listeners para evitar duplicação
-        var oldForm = document.getElementById('auth-form');
-        var newForm = oldForm.cloneNode(true);
-        oldForm.parentNode.replaceChild(newForm, oldForm);
-        newForm.addEventListener('submit', handleAuthSubmit);
+        var form = document.getElementById('auth-form');
+        var newForm = form.cloneNode(true);
+        form.parentNode.replaceChild(newForm, form);
+        newForm.addEventListener('submit', handleAuth);
         
-        var toggleBtn = document.getElementById('toggle-auth-mode');
-        var newToggle = toggleBtn.cloneNode(true);
-        toggleBtn.parentNode.replaceChild(newToggle, toggleBtn);
-        
-        newToggle.addEventListener('click', function() {
+        var toggle = document.getElementById('toggle-auth-mode');
+        toggle.onclick = function() {
             isLoginMode = !isLoginMode;
             document.getElementById('auth-submit-btn').textContent = isLoginMode ? 'Entrar' : 'Cadastrar';
-            newToggle.textContent = isLoginMode ? 'Não tem conta? Cadastre-se' : 'Já tem conta? Entrar';
-        });
+            toggle.textContent = isLoginMode ? 'Não tem conta? Cadastre-se' : 'Já tem conta? Entrar';
+        };
     }
     
     function showUI() {
@@ -151,31 +158,25 @@
         navigateTo('dashboard');
     }
 
-    async function handleAuthSubmit(e) {
+    async function handleAuth(e) {
         e.preventDefault();
-        var email = document.getElementById('auth-email').value;
-        var password = document.getElementById('auth-password').value;
+        var em = document.getElementById('auth-email').value;
+        var pw = document.getElementById('auth-password').value;
         var btn = document.getElementById('auth-submit-btn');
-        var errorEl = document.getElementById('auth-error-message');
         
-        btn.disabled = true;
-        btn.textContent = 'Processando...';
-        errorEl.textContent = '';
+        btn.disabled = true; btn.textContent = '...';
         
         try {
-            if (isLoginMode) {
-                await auth.signInWithEmailAndPassword(email, password);
-            } else {
-                var cred = await auth.createUserWithEmailAndPassword(email, password);
+            if (isLoginMode) await auth.signInWithEmailAndPassword(em, pw);
+            else {
+                var cred = await auth.createUserWithEmailAndPassword(em, pw);
                 await db.ref('artifacts/' + appId + '/users/' + cred.user.uid + '/profile').set({
-                    email: email, role: 'dentist', registeredAt: new Date().toISOString()
+                    email: em, role: 'dentist', registeredAt: new Date().toISOString()
                 });
             }
         } catch (error) {
-            console.error(error);
-            errorEl.textContent = "Erro: " + error.message;
-            btn.disabled = false;
-            btn.textContent = isLoginMode ? 'Entrar' : 'Cadastrar';
+            alert("Erro: " + error.message);
+            btn.disabled = false; btn.textContent = isLoginMode ? 'Entrar' : 'Cadastrar';
         }
     }
 
@@ -194,11 +195,8 @@
         else if (view === 'financials') renderFinancialManager(content);
         
         document.querySelectorAll('#nav-menu button').forEach(function(btn) {
-            if (btn.dataset.view === view) {
-                btn.className = 'flex items-center p-3 rounded-xl w-full text-left bg-indigo-600 text-white shadow-lg';
-            } else {
-                btn.className = 'flex items-center p-3 rounded-xl w-full text-left text-indigo-200 hover:bg-indigo-700 hover:text-white';
-            }
+            var active = btn.dataset.view === view;
+            btn.className = active ? 'flex items-center p-3 rounded-xl w-full text-left bg-indigo-600 text-white shadow-lg' : 'flex items-center p-3 rounded-xl w-full text-left text-indigo-200 hover:bg-indigo-700 hover:text-white';
         });
     }
     
@@ -216,40 +214,29 @@
     }
 
     // ==================================================================
-    // 5. TELAS: DASHBOARD
+    // 5. TELAS
     // ==================================================================
-    
+
+    // --- DASHBOARD ---
     function renderDashboard(container) {
         container.innerHTML = `
             <div class="p-8 bg-white shadow-2xl rounded-2xl border border-indigo-100">
                 <h2 class="text-3xl font-bold text-indigo-800 mb-6"><i class='bx bxs-dashboard'></i> Visão Geral</h2>
                 <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-                    <div class="p-4 bg-indigo-100 rounded-lg"><p class="text-gray-600">Pacientes</p><h3 class="text-2xl font-bold text-indigo-800" id="dash-pat">${allPatients.length}</h3></div>
-                    <div class="p-4 bg-green-100 rounded-lg"><p class="text-gray-600">Estoque</p><h3 class="text-2xl font-bold text-green-800" id="dash-stk">${stockItems.length}</h3></div>
+                    <div class="p-4 bg-indigo-100 rounded-lg"><p class="text-gray-600">Pacientes</p><h3 class="text-2xl font-bold text-indigo-800" id="dash-pat">0</h3></div>
+                    <div class="p-4 bg-green-100 rounded-lg"><p class="text-gray-600">Estoque</p><h3 class="text-2xl font-bold text-green-800" id="dash-stk">0</h3></div>
                     <div class="p-4 bg-yellow-100 rounded-lg"><p class="text-gray-600">A Receber</p><h3 class="text-2xl font-bold text-yellow-800" id="dash-rec">R$ 0,00</h3></div>
                     <div class="p-4 bg-red-100 rounded-lg"><p class="text-gray-600">A Pagar</p><h3 class="text-2xl font-bold text-red-800" id="dash-exp">R$ 0,00</h3></div>
                 </div>
                 <div class="border p-4 rounded-xl bg-gray-50">
-                    <h3 class="font-bold text-indigo-800 mb-2">Instruções da IA</h3>
-                    <textarea id="brain-input" class="w-full p-2 border rounded" rows="2"></textarea>
-                    <button id="save-brain-btn" class="mt-2 bg-indigo-600 text-white px-4 py-1 rounded text-sm">Salvar</button>
+                    <h3 class="font-bold text-indigo-800 mb-2">Instruções da IA (Brain)</h3>
+                    <textarea id="brain-input" class="w-full p-2 border rounded text-sm" rows="3" placeholder="Ex: Focar em implantes..."></textarea>
+                    <button id="save-brain-btn" class="mt-2 bg-indigo-600 text-white px-4 py-1 rounded text-sm">Salvar Diretrizes</button>
                 </div>
             </div>`;
-            
-        // Listeners de Finanças para KPIs
-        db.ref(getFinancePath(currentUser.uid, 'receivable')).on('value', function(s) {
-            let total = 0; 
-            if(s.exists()) s.forEach(function(x) { if(x.val().status !== 'Recebido') total += parseFloat(x.val().amount || 0); });
-            if(document.getElementById('dash-rec')) document.getElementById('dash-rec').textContent = formatCurrency(total);
-        });
         
-        db.ref(getFinancePath(currentUser.uid, 'expenses')).on('value', function(s) {
-            let total = 0; 
-            if(s.exists()) s.forEach(function(x) { if(x.val().status !== 'Pago') total += parseFloat(x.val().amount || 0); });
-            if(document.getElementById('dash-exp')) document.getElementById('dash-exp').textContent = formatCurrency(total);
-        });
+        updateKPIs(); // Atualiza com o que já está no cache
         
-        // Carregar IA
         var brainRef = db.ref(getAdminPath(currentUser.uid, 'aiConfig/directives'));
         brainRef.once('value', function(s) { if(s.exists()) document.getElementById('brain-input').value = s.val().promptDirectives; });
         document.getElementById('save-brain-btn').onclick = function() {
@@ -258,41 +245,33 @@
         };
     }
 
-    // ==================================================================
-    // 6. GESTÃO DE PACIENTES
-    // ==================================================================
-    
+    // --- PACIENTES ---
     function renderPatientManager(container) {
         container.innerHTML = `
             <div class="p-8 bg-white shadow-lg rounded-2xl">
                 <div class="flex justify-between mb-6">
                     <h2 class="text-2xl font-bold text-indigo-800">Pacientes</h2>
-                    <button onclick="openPatientModal()" class="bg-indigo-600 text-white px-4 py-2 rounded shadow">Novo Paciente</button>
+                    <button onclick="openPatientModal()" class="bg-indigo-600 text-white px-4 py-2 rounded shadow hover:bg-indigo-700">Novo Paciente</button>
                 </div>
-                <div class="overflow-x-auto">
-                    <table class="w-full text-left">
-                        <thead class="bg-gray-100 text-gray-600"><tr><th class="p-3">Nome</th><th class="p-3">Tratamento</th><th class="p-3 text-right">Ações</th></tr></thead>
-                        <tbody id="patient-list-body"></tbody>
-                    </table>
-                </div>
+                <table class="w-full text-left">
+                    <thead class="bg-gray-100 text-gray-600"><tr><th class="p-3">Nome</th><th class="p-3">Email/Tel</th><th class="p-3 text-right">Ações</th></tr></thead>
+                    <tbody id="patient-list-body"></tbody>
+                </table>
             </div>`;
         
-        // Expondo globalmente para onclick
+        // Expondo funções globais para os botões do HTML
         window.openPatientModal = openPatientModal;
         window.deletePatient = deletePatient;
         window.openJournal = openJournal;
-        window.openRecModal = openRecModal; // Permite cobrar direto da lista
 
-        // Renderiza tabela com dados do cache
         var tbody = document.getElementById('patient-list-body');
         if(allPatients.length > 0) {
             allPatients.forEach(function(p) {
                 tbody.innerHTML += `
                     <tr class="border-b hover:bg-gray-50">
-                        <td class="p-3 font-medium">${p.name}</td>
-                        <td class="p-3">${p.treatmentType || '-'}</td>
+                        <td class="p-3 font-medium">${p.name}<br><span class="text-xs text-gray-400">${p.treatmentType}</span></td>
+                        <td class="p-3 text-sm">${p.email || '-'}<br>${p.phone || '-'}</td>
                         <td class="p-3 text-right">
-                            <button onclick="openRecModal('${p.id}')" class="text-green-600 mr-3" title="Novo Tratamento/Cobrança"><i class='bx bx-money text-xl'></i></button>
                             <button onclick="openJournal('${p.id}')" class="text-cyan-600 mr-3" title="Prontuário"><i class='bx bx-book-heart text-xl'></i></button>
                             <button onclick="deletePatient('${p.id}')" class="text-red-500" title="Excluir"><i class='bx bx-trash text-xl'></i></button>
                         </td>
@@ -303,21 +282,29 @@
         }
     }
 
-    function openPatientModal(p = null) { // Agora suporta edição se passarmos 'p'
+    function openPatientModal(p = null) {
         var html = `
-            <form id="form-pat" class="space-y-3">
-                <input id="p-name" placeholder="Nome Completo" class="w-full border p-2 rounded" required>
-                <input id="p-email" placeholder="Email" class="w-full border p-2 rounded">
-                <select id="p-type" class="w-full border p-2 rounded"><option>Geral</option><option>Ortodontia</option><option>Implante</option><option>Estética</option></select>
-                <textarea id="p-goal" placeholder="Meta do Tratamento" class="w-full border p-2 rounded"></textarea>
-                <button class="w-full bg-green-600 text-white py-2 rounded font-bold">Salvar</button>
+            <form id="form-pat" class="grid grid-cols-2 gap-3">
+                <div class="col-span-2"><label class="text-xs font-bold">Nome Completo</label><input id="p-name" class="w-full border p-2 rounded" required></div>
+                <div><label class="text-xs font-bold">Email (Login)</label><input id="p-email" type="email" class="w-full border p-2 rounded"></div>
+                <div><label class="text-xs font-bold">Telefone</label><input id="p-phone" class="w-full border p-2 rounded" placeholder="(00) 00000-0000"></div>
+                <div><label class="text-xs font-bold">CPF</label><input id="p-cpf" class="w-full border p-2 rounded"></div>
+                <div><label class="text-xs font-bold">Tratamento</label>
+                <select id="p-type" class="w-full border p-2 rounded"><option>Geral</option><option>Ortodontia</option><option>Implante</option><option>Estética</option></select></div>
+                <div class="col-span-2"><label class="text-xs font-bold">Endereço</label><input id="p-address" class="w-full border p-2 rounded"></div>
+                <div class="col-span-2"><label class="text-xs font-bold">Meta Clínica</label><textarea id="p-goal" class="w-full border p-2 rounded" rows="2"></textarea></div>
+                <button class="col-span-2 bg-green-600 text-white py-2 rounded font-bold">Salvar Ficha</button>
             </form>`;
-        openModal('Novo Paciente', html);
+        openModal('Novo Paciente', html, 'max-w-2xl');
+        
         document.getElementById('form-pat').onsubmit = function(e) {
             e.preventDefault();
             db.ref(getAdminPath(currentUser.uid, 'patients')).push({
                 name: document.getElementById('p-name').value,
                 email: document.getElementById('p-email').value,
+                phone: document.getElementById('p-phone').value,
+                cpf: document.getElementById('p-cpf').value,
+                address: document.getElementById('p-address').value,
                 treatmentType: document.getElementById('p-type').value,
                 treatmentGoal: document.getElementById('p-goal').value,
                 createdAt: new Date().toISOString()
@@ -327,7 +314,7 @@
     }
 
     function deletePatient(id) {
-        if(confirm("Tem certeza?")) db.ref(getAdminPath(currentUser.uid, 'patients') + '/' + id).remove();
+        if(confirm("Excluir paciente?")) db.ref(getAdminPath(currentUser.uid, 'patients') + '/' + id).remove();
     }
 
     // --- DIÁRIO DO PACIENTE (INTEGRAÇÃO FINANCEIRA) ---
@@ -336,26 +323,62 @@
         if(!p) return;
         
         var html = `
-            <div class="bg-blue-50 p-3 rounded mb-3 text-sm">
-                <b>Meta:</b> ${p.treatmentGoal || 'Não definido'}
+            <div class="bg-indigo-50 p-4 rounded-xl mb-4 text-sm flex justify-between">
+                <div>
+                    <h3 class="font-bold text-indigo-900 text-lg">${p.name}</h3>
+                    <p class="text-indigo-700">${p.email || 'Sem email'} | ${p.phone || 'Sem telefone'}</p>
+                    <p class="text-xs text-gray-500 mt-1">${p.address || 'Endereço não informado'}</p>
+                </div>
+                <div class="text-right">
+                    <span class="bg-white px-2 py-1 rounded text-xs font-bold text-indigo-600 shadow-sm">${p.treatmentType}</span>
+                </div>
             </div>
-            
-            <div class="mb-4 border p-2 rounded max-h-40 overflow-y-auto">
-                <h5 class="font-bold text-xs text-gray-500 mb-1">PROCEDIMENTOS E MATERIAIS</h5>
-                <div id="journal-fin-list" class="text-sm">Carregando histórico...</div>
-            </div>
-            
-            <div id="chat-area" class="bg-gray-100 p-2 h-48 overflow-y-auto flex flex-col gap-2 mb-2 rounded"></div>
-            <div class="flex gap-2">
-                <input id="chat-msg" class="flex-grow border p-2 rounded" placeholder="Evolução...">
-                <button onclick="sendChat('${id}', 'Dentista')" class="bg-indigo-600 text-white px-3 rounded">Enviar</button>
-                <button onclick="askAI('${id}')" class="bg-purple-600 text-white px-3 rounded" title="IA"><i class='bx bxs-magic-wand'></i></button>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div class="border p-3 rounded-xl bg-white">
+                    <h4 class="font-bold text-xs text-gray-500 mb-2 uppercase tracking-wide">Histórico Financeiro</h4>
+                    <div id="journal-fin-list" class="text-sm h-64 overflow-y-auto space-y-2">Carregando...</div>
+                </div>
+                
+                <div class="border p-3 rounded-xl bg-white flex flex-col">
+                    <h4 class="font-bold text-xs text-gray-500 mb-2 uppercase tracking-wide">Evolução Clínica & Chat</h4>
+                    <div id="chat-area" class="bg-gray-50 p-2 h-48 overflow-y-auto flex flex-col gap-2 mb-2 rounded"></div>
+                    <div class="flex gap-2">
+                        <input id="chat-msg" class="flex-grow border p-2 rounded text-sm" placeholder="Evolução...">
+                        <button onclick="sendChat('${id}', 'Dentista')" class="bg-indigo-600 text-white px-3 rounded"><i class='bx bxs-send'></i></button>
+                        <button onclick="askAI('${id}')" class="bg-purple-600 text-white px-3 rounded" title="IA"><i class='bx bxs-magic-wand'></i></button>
+                    </div>
+                </div>
             </div>
         `;
-        openModal(`Prontuário: ${p.name}`, html, 'max-w-3xl');
+        openModal(`Prontuário`, html, 'max-w-5xl');
 
-        // Carrega Financeiro no Diário
-        db.ref(getFinancePath(currentUser.uid, 'receivable')).orderByChild('patientId').equalTo(id).once('value', async function(s) {
+        // Carrega Financeiro dentro do Modal
+        loadPatientServiceHistory(id);
+
+        // Carrega Chat
+        var chatRef = db.ref(getJournalPath(id));
+        chatRef.limitToLast(20).on('child_added', function(s) {
+            var m = s.val();
+            var isMe = m.author === 'Dentista';
+            var align = isMe ? 'self-end bg-indigo-100' : (m.author === 'IA' ? 'self-start bg-purple-50' : 'self-start bg-white border');
+            
+            var mediaHtml = '';
+            if(m.media && m.media.url) {
+                mediaHtml = `<br><a href="${m.media.url}" target="_blank"><img src="${m.media.url}" class="mt-1 rounded max-h-32 border"></a>`;
+            }
+
+            var div = document.createElement('div');
+            div.className = `p-2 rounded text-sm max-w-[90%] ${align}`;
+            div.innerHTML = `<b>${m.author}:</b> ${m.text} ${mediaHtml}`;
+            var area = document.getElementById('chat-area');
+            if(area) { area.appendChild(div); area.scrollTop = area.scrollHeight; }
+        });
+    }
+    
+    // Função auxiliar para carregar histórico financeiro dentro do modal
+    function loadPatientServiceHistory(patientId) {
+        db.ref(getFinancePath(currentUser.uid, 'receivable')).orderByChild('patientId').equalTo(patientId).once('value', async function(s) {
             var div = document.getElementById('journal-fin-list');
             if(!div) return;
             div.innerHTML = '';
@@ -364,54 +387,45 @@
                 var data = s.val();
                 for(var key in data) {
                     var item = data[key];
-                    // Busca materiais usados neste serviço (assíncrono)
+                    // Busca materiais usados
                     var matsHTML = '';
                     var matSnap = await db.ref(getFinancePath(currentUser.uid, 'receivable') + '/' + key + '/materials').once('value');
                     if(matSnap.exists()) {
-                        matsHTML = '<div class="text-xs text-gray-500 ml-4">Materiais: ';
-                        matSnap.forEach(function(m) { matsHTML += m.val().quantityUsed + ' ' + m.val().unit + ' ' + m.val().name + ', '; });
-                        matsHTML += '</div>';
+                        var arr = [];
+                        matSnap.forEach(function(m) { arr.push(m.val().quantityUsed + m.val().unit + ' ' + m.val().name); });
+                        matsHTML = `<div class="text-xs text-gray-500 mt-1 bg-gray-100 p-1 rounded">🛠️ ${arr.join(', ')}</div>`;
                     }
 
                     div.innerHTML += `
-                        <div class="border-b py-1">
-                            <div class="flex justify-between">
-                                <span>${item.description}</span>
-                                <span class="font-bold ${item.status === 'Recebido' ? 'text-green-600' : 'text-yellow-600'}">${formatCurrency(item.amount)}</span>
+                        <div class="border-b pb-2 last:border-0">
+                            <div class="flex justify-between items-center">
+                                <span class="font-bold text-gray-700">${item.description}</span>
+                                <span class="font-bold ${item.status === 'Recebido' ? 'text-green-600' : 'text-yellow-600'} text-xs">${item.status}</span>
+                            </div>
+                            <div class="text-xs text-gray-400 flex justify-between">
+                                <span>${formatDateTime(item.dueDate)}</span>
+                                <span>${formatCurrency(item.amount)}</span>
                             </div>
                             ${matsHTML}
                         </div>`;
                 }
             } else {
-                div.innerHTML = '<i class="text-gray-400">Sem procedimentos registrados.</i>';
+                div.innerHTML = '<i class="text-gray-400 text-xs">Sem procedimentos registrados.</i>';
             }
-        });
-
-        // Carrega Chat
-        var chatRef = db.ref('artifacts/' + appId + '/patients/' + id + '/journal');
-        chatRef.on('child_added', function(s) {
-            var m = s.val();
-            var div = document.createElement('div');
-            div.className = `p-2 rounded text-sm max-w-[85%] ${m.author === 'IA' ? 'bg-purple-100 self-start' : 'bg-white border self-end'}`;
-            div.innerHTML = `<b>${m.author}:</b> ${m.text}`;
-            var area = document.getElementById('chat-area');
-            if(area) { area.appendChild(div); area.scrollTop = area.scrollHeight; }
         });
     }
 
     window.sendChat = function(pid, author, txt) {
         var msg = txt || document.getElementById('chat-msg').value;
         if(!msg) return;
-        db.ref('artifacts/' + appId + '/patients/' + pid + '/journal').push({
-            text: msg, author: author, timestamp: new Date().toISOString()
-        });
+        db.ref(getJournalPath(pid)).push({ text: msg, author: author, timestamp: new Date().toISOString() });
         if(!txt) document.getElementById('chat-msg').value = '';
     };
 
     window.askAI = async function(pid) {
         var p = allPatients.find(function(x){ return x.id === pid; });
-        var prompt = `Paciente: ${p.name}. Meta: ${p.treatmentGoal}. Sugira a próxima etapa clínica curta.`;
-        var resp = await window.callGeminiAPI(prompt, "Gere sugestão.");
+        var prompt = `Paciente: ${p.name}. Histórico: ${p.treatmentGoal}. Resuma a evolução.`;
+        var resp = await window.callGeminiAPI(prompt, "Análise breve.");
         window.sendChat(pid, 'IA', resp);
     };
 
@@ -431,14 +445,12 @@
                 <div id="fin-content-area"></div>
             </div>`;
         
-        // Expor funções
         window.renderStockView = renderStockView;
         window.renderReceivablesView = renderReceivablesView;
         window.renderExpensesView = renderExpensesView;
         
-        // Expor Ações
-        window.deleteTx = function(type, id) { if(confirm("Excluir?")) db.ref(getFinancePath(currentUser.uid, type) + '/' + id).remove(); };
-        window.deleteStock = function(id) { if(confirm("Remover?")) db.ref(getStockPath(currentUser.uid) + '/' + id).remove(); };
+        window.deleteTx = function(type, id) { if(confirm("Excluir registro?")) db.ref(getFinancePath(currentUser.uid, type) + '/' + id).remove(); };
+        window.deleteStock = function(id) { if(confirm("Remover item?")) db.ref(getStockPath(currentUser.uid) + '/' + id).remove(); };
         
         window.settleTx = function(type, id) {
             if(!confirm("Confirmar baixa?")) return;
@@ -459,14 +471,13 @@
                 <h3 class="font-bold text-gray-700">Inventário</h3>
                 <button onclick="openStockModal()" class="bg-green-600 text-white px-3 py-1 rounded text-sm">+ Item Manual</button>
             </div>
-            <div class="overflow-x-auto">
+            <div id="stock-view" class="overflow-x-auto">
                 <table class="w-full text-sm text-left">
                     <thead class="bg-gray-50 text-gray-600"><tr><th class="p-2">Item</th><th class="p-2">Qtd</th><th class="p-2">Custo</th><th class="p-2">Ação</th></tr></thead>
                     <tbody id="stock-table-body"></tbody>
                 </table>
             </div>`;
         
-        // Usa Cache
         var tb = document.getElementById('stock-table-body');
         if(stockItems.length > 0) {
             stockItems.forEach(function(i) {
@@ -483,7 +494,7 @@
         }
     }
 
-    // --- RECEITAS ---
+    // --- RECEITAS (COM BAIXA AUTOMÁTICA E FORMA DE PAGAMENTO) ---
     function renderReceivablesView() {
         var div = document.getElementById('fin-content-area');
         div.innerHTML = `
@@ -491,78 +502,68 @@
                 <h3 class="font-bold text-gray-700">Serviços (Receitas)</h3>
                 <button onclick="openRecModal()" class="bg-indigo-600 text-white px-3 py-1 rounded text-sm">+ Novo Serviço</button>
             </div>
-            <div id="rec-list" class="space-y-2"></div>`;
+            <div id="receivables-view" class="space-y-2"></div>`; // ID para atualização
         
-        db.ref(getFinancePath(currentUser.uid, 'receivable')).on('value', function(s) {
-            var list = document.getElementById('rec-list');
-            if(!list) return;
-            list.innerHTML = '';
-            if(s.exists()) {
-                var data = s.val();
-                Object.keys(data).forEach(function(k) {
-                    var r = data[k];
-                    var isPaid = r.status === 'Recebido';
-                    var badge = isPaid ? `<span class="bg-green-100 text-green-800 text-xs px-2 rounded">Recebido</span>` : `<span class="bg-yellow-100 text-yellow-800 text-xs px-2 rounded">Aberto</span>`;
-                    var action = isPaid ? '' : `<button onclick="settleTx('receivable', '${k}')" class="text-xs bg-green-500 text-white px-2 py-1 rounded hover:bg-green-600 ml-2" title="Receber"><i class='bx bx-check'></i></button>`;
+        var list = document.getElementById('receivables-view');
+        if(receivables.length > 0) {
+            receivables.forEach(function(r) {
+                var k = r.id;
+                var isPaid = r.status === 'Recebido';
+                var badge = isPaid ? `<span class="bg-green-100 text-green-800 text-xs px-2 rounded">Recebido</span>` : `<span class="bg-yellow-100 text-yellow-800 text-xs px-2 rounded">Aberto</span>`;
+                var action = isPaid ? '' : `<button onclick="settleTx('receivable', '${k}')" class="text-xs bg-green-500 text-white px-2 py-1 rounded hover:bg-green-600 ml-2" title="Receber"><i class='bx bx-check'></i></button>`;
 
-                    list.innerHTML += `
-                        <div class="p-3 border rounded flex justify-between items-center bg-white hover:shadow-sm transition">
-                            <div>
-                                <div class="font-bold text-indigo-900">${r.patientName} ${getPaymentBadge(r.paymentMethod)}</div>
-                                <div class="text-xs text-gray-500">${r.description} - Venc: ${formatDateTime(r.dueDate)}</div>
-                            </div>
-                            <div class="text-right flex items-center gap-2">
-                                ${badge}
-                                <div class="font-bold text-green-600 ml-2">${formatCurrency(r.amount)}</div>
-                                <button onclick="manageMaterials('${k}')" class="text-xs bg-yellow-200 text-yellow-800 px-2 py-1 rounded hover:bg-yellow-300" title="Baixa de Materiais"><i class='bx bx-package'></i></button>
-                                ${action}
-                                <button onclick="deleteTx('receivable', '${k}')" class="text-red-400 hover:text-red-600"><i class='bx bx-trash'></i></button>
-                            </div>
-                        </div>`;
-                });
-            } else { list.innerHTML = '<p class="text-center text-gray-400">Nenhum serviço registrado.</p>'; }
-        });
+                list.innerHTML += `
+                    <div class="p-3 border rounded flex justify-between items-center bg-white hover:shadow-sm transition">
+                        <div>
+                            <div class="font-bold text-indigo-900">${r.patientName} ${getPaymentBadge(r.paymentMethod)}</div>
+                            <div class="text-xs text-gray-500">${r.description} - Venc: ${formatDateTime(r.dueDate)}</div>
+                        </div>
+                        <div class="text-right flex items-center gap-2">
+                            ${badge}
+                            <div class="font-bold text-green-600 ml-2">${formatCurrency(r.amount)}</div>
+                            <button onclick="manageMaterials('${k}')" class="text-xs bg-yellow-200 text-yellow-800 px-2 py-1 rounded hover:bg-yellow-300" title="Baixa de Materiais Usados"><i class='bx bx-package'></i></button>
+                            ${action}
+                            <button onclick="deleteTx('receivable', '${k}')" class="text-red-400 hover:text-red-600"><i class='bx bx-trash'></i></button>
+                        </div>
+                    </div>`;
+            });
+        } else { list.innerHTML = '<p class="text-center text-gray-400">Nenhum serviço registrado.</p>'; }
     }
 
-    // --- DESPESAS ---
+    // --- DESPESAS (COM ENTRADA DE ESTOQUE E FORMA DE PAGAMENTO) ---
     function renderExpensesView() {
         var div = document.getElementById('fin-content-area');
         div.innerHTML = `
             <div class="flex justify-between mb-3">
-                <h3 class="font-bold text-gray-700">Contas a Pagar</h3>
+                <h3 class="font-bold text-gray-700">Contas a Pagar (Despesas)</h3>
                 <button onclick="openExpModal()" class="bg-red-600 text-white px-3 py-1 rounded text-sm">+ Nova Despesa</button>
             </div>
-            <div id="exp-list" class="space-y-2"></div>`;
+            <div id="expenses-view" class="space-y-2"></div>`; // ID para atualização
         
-        db.ref(getFinancePath(currentUser.uid, 'expenses')).on('value', function(s) {
-            var list = document.getElementById('exp-list');
-            if(!list) return;
-            list.innerHTML = '';
-            if(s.exists()) {
-                var data = s.val();
-                Object.keys(data).forEach(function(k) {
-                    var e = data[k];
-                    var isPaid = e.status === 'Pago';
-                    var badge = isPaid ? `<span class="bg-green-100 text-green-800 text-xs px-2 rounded">Pago</span>` : `<span class="bg-red-100 text-red-800 text-xs px-2 rounded">Aberto</span>`;
-                    var action = isPaid ? '' : `<button onclick="settleTx('expenses', '${k}')" class="text-xs bg-blue-500 text-white px-2 py-1 rounded hover:bg-blue-600 ml-2" title="Pagar"><i class='bx bx-check'></i></button>`;
+        var list = document.getElementById('expenses-view');
+        if(expenses.length > 0) {
+            expenses.forEach(function(e) {
+                var k = e.id;
+                var isPaid = e.status === 'Pago';
+                var badge = isPaid ? `<span class="bg-green-100 text-green-800 text-xs px-2 rounded">Pago</span>` : `<span class="bg-red-100 text-red-800 text-xs px-2 rounded">Aberto</span>`;
+                var action = isPaid ? '' : `<button onclick="settleTx('expenses', '${k}')" class="text-xs bg-blue-500 text-white px-2 py-1 rounded hover:bg-blue-600 ml-2" title="Pagar"><i class='bx bx-check'></i></button>`;
 
-                    list.innerHTML += `
-                        <div class="p-3 border rounded flex justify-between items-center bg-white hover:shadow-sm transition">
-                            <div>
-                                <div class="font-bold text-gray-800">${e.supplier} <span class="text-xs font-normal text-gray-500">(${e.ref || 'S/Ref'})</span></div>
-                                <div class="text-xs text-gray-500">${e.description} - ${getPaymentBadge(e.paymentMethod)}</div>
-                            </div>
-                            <div class="text-right flex items-center gap-2">
-                                ${badge}
-                                <div class="font-bold text-red-600 ml-2">${formatCurrency(e.amount)}</div>
-                                <button onclick="managePurchaseItems('${k}')" class="text-xs bg-green-200 text-green-800 px-2 py-1 rounded hover:bg-green-300" title="Entrada de Produtos"><i class='bx bx-cart-add'></i></button>
-                                ${action}
-                                <button onclick="deleteTx('expenses', '${k}')" class="text-red-400 hover:text-red-600"><i class='bx bx-trash'></i></button>
-                            </div>
-                        </div>`;
-                });
-            } else { list.innerHTML = '<p class="text-center text-gray-400">Nenhuma despesa registrada.</p>'; }
-        });
+                list.innerHTML += `
+                    <div class="p-3 border rounded flex justify-between items-center bg-white hover:shadow-sm transition">
+                        <div>
+                            <div class="font-bold text-gray-800">${e.supplier} <span class="text-xs font-normal text-gray-500">(${e.ref || 'S/Ref'})</span></div>
+                            <div class="text-xs text-gray-500">${e.description} - ${getPaymentBadge(e.paymentMethod)}</div>
+                        </div>
+                        <div class="text-right flex items-center gap-2">
+                            ${badge}
+                            <div class="font-bold text-red-600 ml-2">${formatCurrency(e.amount)}</div>
+                            <button onclick="managePurchaseItems('${k}')" class="text-xs bg-green-200 text-green-800 px-2 py-1 rounded hover:bg-green-300" title="Entrada de Produtos"><i class='bx bx-cart-add'></i></button>
+                            ${action}
+                            <button onclick="deleteTx('expenses', '${k}')" class="text-red-400 hover:text-red-600"><i class='bx bx-trash'></i></button>
+                        </div>
+                    </div>`;
+            });
+        } else { list.innerHTML = '<p class="text-center text-gray-400">Nenhuma despesa registrada.</p>'; }
     }
 
     // --- MODAIS DE CRIAÇÃO (COM FORMA DE PAGAMENTO) ---
@@ -571,7 +572,7 @@
         var html = `
             <form id="rec-form" class="grid gap-3 text-sm">
                 <div><label class="font-bold text-gray-600">Paciente</label><select id="r-pat" class="w-full border p-2 rounded bg-white">${opts}</select></div>
-                <div><label class="font-bold text-gray-600">Serviço</label><input id="r-desc" placeholder="Ex: Implante" class="w-full border p-2 rounded" required></div>
+                <div><label class="font-bold text-gray-600">Descrição do Serviço</label><input id="r-desc" placeholder="Ex: Clareamento" class="w-full border p-2 rounded" required></div>
                 <div class="grid grid-cols-2 gap-2">
                     <div><label class="font-bold text-gray-600">Valor (R$)</label><input id="r-val" type="number" step="0.01" class="w-full border p-2 rounded" required></div>
                     <div><label class="font-bold text-gray-600">Vencimento</label><input id="r-date" type="date" class="w-full border p-2 rounded" required></div>
@@ -580,7 +581,7 @@
                 <select id="r-pay" class="w-full border p-2 rounded bg-white">
                     <option value="pix">Pix</option><option value="credit">Cartão Crédito</option><option value="debit">Cartão Débito</option><option value="cash">Dinheiro</option><option value="convenio">Convênio</option>
                 </select></div>
-                <button class="bg-indigo-600 text-white p-2 rounded font-bold mt-2 w-full">Salvar e Baixar Estoque</button>
+                <button class="bg-indigo-600 text-white p-2 rounded font-bold mt-2 w-full">Salvar e Adicionar Materiais</button>
             </form>`;
         openModal("Novo Serviço", html);
         
@@ -599,7 +600,6 @@
                 status: 'Aberto', registeredAt: new Date().toISOString()
             }).then(function() {
                 closeModal();
-                // AUTO-OPEN: Abre materiais
                 setTimeout(function() { window.manageMaterials(newRef.key); }, 300);
             });
         };
