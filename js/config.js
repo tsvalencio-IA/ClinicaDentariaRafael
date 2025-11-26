@@ -25,7 +25,7 @@
     // 3. CONFIGURAÇÃO GOOGLE GEMINI API
     // ATENÇÃO: Cole sua chave do Google AI Studio abaixo
     const GEMINI_MODEL = "gemini-2.5-flash-preview-09-2025";
-    const API_KEY = "SUA_CHAVE_AQUI_GEMINI_API_KEY"; 
+    const API_KEY = "AIzaSyDsYMaPEILVKdqeOcgq0hK-2Lw5stRtzIs"; 
 
     // 4. ID INTERNO DO APP
     const APP_ID = 'dentista-inteligente-app';
