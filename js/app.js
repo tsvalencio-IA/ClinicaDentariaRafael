@@ -1,37 +1,48 @@
 // ==================================================================
-// MÓDULO PRINCIPAL - DENTISTA INTELIGENTE (VERSÃO CORRIGIDA - CHAT & IA)
+// MÓDULO PRINCIPAL - DENTISTA INTELIGENTE (VERSÃO UNIFICADA E CORRIGIDA)
 // ==================================================================
 (function() {
     
+    // 1. CONFIGURAÇÕES
     var config = window.AppConfig;
     var appId = config ? config.APP_ID : 'dentista-inteligente-app';
     
+    // ESTADO GLOBAL
     var db, auth;
     var currentUser = null;
     var currentView = 'dashboard';
     var isLoginMode = true; 
-    var selectedFile = null;
+    var selectedFile = null; 
     
-    // CACHES
+    // CONTROLE DE CHAT (IMPEDE MISTURA DE CONVERSAS)
+    var currentChatRef = null;
+    
+    // CACHES DE DADOS
     var allPatients = []; 
     var receivables = []; 
     var stockItems = []; 
     var expenses = []; 
     
-    // --- UTILS ---
+    // ==================================================================
+    // 2. UTILITÁRIOS
+    // ==================================================================
+    
     function getAdminPath(uid, path) { return 'artifacts/' + appId + '/users/' + uid + '/' + path; }
     function getStockPath(uid) { return getAdminPath(uid, 'stock'); }
     function getFinancePath(uid, type) { return getAdminPath(uid, 'finance/' + type); }
     function getJournalPath(pid) { return 'artifacts/' + appId + '/patients/' + pid + '/journal'; }
-    function getRecMatPath(recId) { return getFinancePath(currentUser.uid, 'receivable') + '/' + recId + '/materials'; }
-    function getExpItemsPath(expId) { return getFinancePath(currentUser.uid, 'expenses') + '/' + expId + '/purchasedItems'; }
+    
+    function getReceivableMaterialsPath(recId) { return getFinancePath(currentUser.uid, 'receivable') + '/' + recId + '/materials'; }
+    function getExpensePurchasedItemsPath(expId) { return getFinancePath(currentUser.uid, 'expenses') + '/' + expId + '/purchasedItems'; }
 
     function formatCurrency(value) { return 'R$ ' + parseFloat(value || 0).toFixed(2).replace('.', ','); }
+
     function formatDateTime(iso) {
         if(!iso) return '-';
         var d = new Date(iso);
         return isNaN(d) ? '-' : d.toLocaleDateString('pt-BR') + ' ' + d.toLocaleTimeString('pt-BR', {hour: '2-digit', minute:'2-digit'});
     }
+    
     function formatFileName(name) { return name.length > 20 ? name.substring(0, 10) + '...' : name || ''; }
     
     function getPaymentBadge(method) {
@@ -46,7 +57,12 @@
         return icons[method] || '<span class="text-gray-500 text-xs">-</span>';
     }
 
-    // --- CORE ---
+    function showNotification(message, type) { console.log('[' + (type || 'INFO') + '] ' + message); }
+
+    // ==================================================================
+    // 3. INICIALIZAÇÃO E LOGIN
+    // ==================================================================
+    
     function initializeFirebase() {
         if (!firebase.apps.length) firebase.initializeApp(config.firebaseConfig);
         db = firebase.database();
@@ -68,7 +84,7 @@
                         loadInitialData(); 
                         showUI();
                     } else {
-                        alert("Acesso restrito."); auth.signOut();
+                        alert("Acesso restrito a dentistas."); auth.signOut();
                     }
                 });
             } else {
@@ -84,18 +100,21 @@
             updateKPIs();
             if(currentView === 'patients') renderPatientManager(document.getElementById('main-content'));
         });
+
         db.ref(getStockPath(currentUser.uid)).on('value', function(s) {
             stockItems = [];
             if(s.exists()) s.forEach(function(c) { var i = c.val(); i.id = c.key; stockItems.push(i); });
             updateKPIs();
             if(currentView === 'financials' && document.getElementById('stock-view')) renderStockView();
         });
+        
         db.ref(getFinancePath(currentUser.uid, 'receivable')).on('value', function(s) {
             receivables = [];
             if(s.exists()) s.forEach(function(c) { var r = c.val(); r.id = c.key; receivables.push(r); });
             updateKPIs();
             if(currentView === 'financials' && document.getElementById('receivables-view')) renderReceivablesView();
         });
+        
         db.ref(getFinancePath(currentUser.uid, 'expenses')).on('value', function(s) {
             expenses = [];
             if(s.exists()) s.forEach(function(c) { var e = c.val(); e.id = c.key; expenses.push(e); });
@@ -108,20 +127,23 @@
         if(!document.getElementById('dash-pat')) return;
         document.getElementById('dash-pat').textContent = allPatients.length;
         document.getElementById('dash-stk').textContent = stockItems.length;
+        
         var totalRec = receivables.reduce(function(acc, r) { return r.status === 'Recebido' ? acc + parseFloat(r.amount||0) : acc; }, 0);
         document.getElementById('dash-rec').textContent = formatCurrency(totalRec);
+        
         var totalExp = expenses.reduce(function(acc, e) { return e.status === 'Pago' ? acc + parseFloat(e.amount||0) : acc; }, 0);
         document.getElementById('dash-exp').textContent = formatCurrency(totalExp);
     }
     
-    // --- UI AUTH ---
     function showLoginScreen() {
         document.getElementById('login-screen').classList.remove('hidden');
         document.getElementById('app-container').classList.add('hidden');
+        
         var form = document.getElementById('auth-form');
         var newForm = form.cloneNode(true);
         form.parentNode.replaceChild(newForm, form);
         newForm.addEventListener('submit', handleAuth);
+        
         var toggle = document.getElementById('toggle-auth-mode');
         var newToggle = toggle.cloneNode(true);
         toggle.parentNode.replaceChild(newToggle, toggle);
@@ -143,6 +165,9 @@
         e.preventDefault();
         var em = document.getElementById('auth-email').value;
         var pw = document.getElementById('auth-password').value;
+        var btn = document.getElementById('auth-submit-btn');
+        btn.disabled = true; btn.textContent = '...';
+        
         try {
             if (isLoginMode) await auth.signInWithEmailAndPassword(em, pw);
             else {
@@ -151,18 +176,26 @@
                     email: em, role: 'dentist', registeredAt: new Date().toISOString()
                 });
             }
-        } catch (error) { alert("Erro: " + error.message); }
+        } catch (error) {
+            alert("Erro: " + error.message);
+            btn.disabled = false; btn.textContent = isLoginMode ? 'Entrar' : 'Cadastrar';
+        }
     }
 
-    // --- NAV ---
+    // ==================================================================
+    // 4. NAVEGAÇÃO
+    // ==================================================================
+    
     function navigateTo(view) {
         if(!currentUser) return;
         currentView = view;
         var content = document.getElementById('main-content');
         content.innerHTML = '';
+        
         if (view === 'dashboard') renderDashboard(content);
         else if (view === 'patients') renderPatientManager(content);
         else if (view === 'financials') renderFinancialManager(content);
+        
         document.querySelectorAll('#nav-menu button').forEach(function(btn) {
             var active = btn.dataset.view === view;
             btn.className = active ? 'flex items-center p-3 rounded-xl w-full text-left bg-indigo-600 text-white shadow-lg' : 'flex items-center p-3 rounded-xl w-full text-left text-indigo-200 hover:bg-indigo-700 hover:text-white';
@@ -182,7 +215,10 @@
         });
     }
 
-    // --- TELAS ---
+    // ==================================================================
+    // 5. TELAS
+    // ==================================================================
+
     function renderDashboard(container) {
         container.innerHTML = `
             <div class="p-8 bg-white shadow-2xl rounded-2xl border border-indigo-100">
@@ -190,12 +226,12 @@
                 <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
                     <div class="p-4 bg-indigo-100 rounded-lg"><p class="text-gray-600 text-sm uppercase font-bold">Pacientes</p><h3 class="text-2xl font-bold text-indigo-800" id="dash-pat">0</h3></div>
                     <div class="p-4 bg-green-100 rounded-lg"><p class="text-gray-600 text-sm uppercase font-bold">Estoque</p><h3 class="text-3xl font-bold text-green-800" id="dash-stk">0</h3></div>
-                    <div class="p-4 bg-yellow-100 rounded-lg"><p class="text-gray-600 text-sm uppercase font-bold">Recebido</p><h3 class="text-2xl font-bold text-yellow-800" id="dash-rec">R$ 0,00</h3></div>
-                    <div class="p-4 bg-red-100 rounded-lg"><p class="text-gray-600 text-sm uppercase font-bold">Pago</p><h3 class="text-2xl font-bold text-red-800" id="dash-exp">R$ 0,00</h3></div>
+                    <div class="p-4 bg-yellow-100 rounded-lg"><p class="text-gray-600 text-sm uppercase font-bold">Faturamento (Recebido)</p><h3 class="text-3xl font-bold text-yellow-800" id="dash-rec">R$ 0,00</h3></div>
+                    <div class="p-4 bg-red-100 rounded-lg"><p class="text-gray-600 text-sm uppercase font-bold">Despesas (Pagas)</p><h3 class="text-3xl font-bold text-red-800" id="dash-exp">R$ 0,00</h3></div>
                 </div>
                 <div class="border p-4 rounded-xl bg-gray-50">
                     <h3 class="font-bold text-indigo-800 mb-2">Instruções da IA (Brain)</h3>
-                    <textarea id="brain-input" class="w-full p-2 border rounded text-sm" rows="3"></textarea>
+                    <textarea id="brain-input" class="w-full p-2 border rounded text-sm" rows="3" placeholder="Ex: Focar em implantes..."></textarea>
                     <button id="save-brain-btn" class="mt-2 bg-indigo-600 text-white px-4 py-1 rounded text-sm">Salvar Diretrizes</button>
                 </div>
             </div>`;
@@ -250,7 +286,7 @@
                 <input type="hidden" id="p-id" value="${isEdit ? p.id : ''}">
                 <div class="col-span-2"><label class="font-bold">Nome Completo</label><input id="p-name" class="w-full border p-2 rounded" value="${isEdit ? p.name : ''}" required></div>
                 <div><label class="font-bold">Email (Login)</label><input id="p-email" type="email" class="w-full border p-2 rounded" value="${isEdit ? p.email : ''}"></div>
-                <div><label class="font-bold">Telefone</label><input id="p-phone" class="w-full border p-2 rounded" value="${isEdit ? p.phone : ''}"></div>
+                <div><label class="font-bold">Telefone</label><input id="p-phone" class="w-full border p-2 rounded" value="${isEdit ? p.phone : ''}" placeholder="(00) 00000-0000"></div>
                 <div><label class="font-bold">CPF</label><input id="p-cpf" class="w-full border p-2 rounded" value="${isEdit ? p.cpf : ''}"></div>
                 <div><label class="font-bold">Tratamento</label>
                 <select id="p-type" class="w-full border p-2 rounded">
@@ -282,21 +318,39 @@
         };
     }
 
-    function deletePatient(id) { if(confirm("Excluir?")) db.ref(getAdminPath(currentUser.uid, 'patients') + '/' + id).remove(); }
+    function deletePatient(id) {
+        if(confirm("Excluir paciente?")) db.ref(getAdminPath(currentUser.uid, 'patients') + '/' + id).remove();
+    }
 
-    // --- PRONTUÁRIO (CORRIGIDO: CHAT E BOTÃO IA) ---
+    // --- PRONTUÁRIO (CHAT + FINANCEIRO + UPLOAD) ---
     function openJournal(id) {
+        // LIMPEZA CRÍTICA PARA EVITAR MISTURA DE CHATS
+        if(currentChatRef) currentChatRef.off();
+        
         var p = allPatients.find(function(x){ return x.id === id; });
         if(!p) return;
         
         var html = `
             <div class="bg-indigo-50 p-4 rounded-xl mb-4 text-sm flex justify-between">
-                <div><h3 class="font-bold text-indigo-900">${p.name}</h3><p class="text-indigo-700">${p.email || ''} | ${p.phone || ''}</p></div>
-                <span class="bg-white px-2 py-1 rounded text-xs font-bold text-indigo-600 shadow-sm">${p.treatmentType}</span>
+                <div>
+                    <h3 class="font-bold text-indigo-900 text-lg">${p.name}</h3>
+                    <p class="text-indigo-700">${p.email || 'Sem email'} | ${p.phone || 'Sem telefone'}</p>
+                    <p class="text-xs text-gray-500 mt-1">${p.address || 'Endereço não informado'}</p>
+                </div>
+                <div class="text-right">
+                    <span class="bg-white px-2 py-1 rounded text-xs font-bold text-indigo-600 shadow-sm">${p.treatmentType}</span>
+                </div>
             </div>
+
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div class="border p-3 rounded-xl bg-white flex flex-col"><h4 class="font-bold text-xs text-gray-500 mb-2 uppercase">Histórico Financeiro</h4><div id="journal-fin-list" class="text-sm h-80 overflow-y-auto space-y-2 pr-2">Carregando...</div></div>
-                <div class="border p-3 rounded-xl bg-white flex flex-col"><h4 class="font-bold text-xs text-gray-500 mb-2 uppercase">Chat</h4><div id="chat-area" class="bg-gray-50 p-2 h-64 overflow-y-auto flex flex-col gap-2 mb-2 rounded"></div>
+                <div class="border p-3 rounded-xl bg-white flex flex-col">
+                    <h4 class="font-bold text-xs text-gray-500 mb-2 uppercase">Histórico Financeiro</h4>
+                    <div id="journal-fin-list" class="text-sm h-80 overflow-y-auto space-y-2 pr-2">Carregando...</div>
+                </div>
+                
+                <div class="border p-3 rounded-xl bg-white flex flex-col">
+                    <h4 class="font-bold text-xs text-gray-500 mb-2 uppercase">Chat</h4>
+                    <div id="chat-area" class="bg-gray-50 p-2 h-64 overflow-y-auto flex flex-col gap-2 mb-2 rounded"></div>
                     <div class="flex gap-2 items-center bg-gray-100 p-2 rounded-xl mt-auto">
                          <input type="file" id="chat-file" class="hidden" accept="image/*">
                          <button onclick="document.getElementById('chat-file').click()" class="text-gray-500 hover:text-indigo-600 p-2"><i class='bx bx-paperclip text-xl'></i></button>
@@ -311,30 +365,41 @@
 
         document.getElementById('chat-file').onchange = function(e) {
             selectedFile = e.target.files[0];
-            if(selectedFile) { document.getElementById('file-preview').textContent = "Anexo: " + selectedFile.name; document.getElementById('file-preview').classList.remove('hidden'); }
+            if(selectedFile) {
+                document.getElementById('file-preview').textContent = "Anexo: " + selectedFile.name;
+                document.getElementById('file-preview').classList.remove('hidden');
+            }
         };
 
         loadPatientServiceHistory(id);
 
-        var chatRef = db.ref(getJournalPath(id));
-        // .off() é crucial para limpar listeners antigos ao trocar de paciente
-        chatRef.off(); 
-        chatRef.limitToLast(50).on('value', function(snap) {
+        // CONEXÃO DO CHAT (USANDO .on('value') PARA CARREGAR TUDO DE UMA VEZ)
+        currentChatRef = db.ref(getJournalPath(id));
+        currentChatRef.on('value', function(snap) {
             var div = document.getElementById('chat-area');
             if(!div) return;
-            div.innerHTML = '';
+            div.innerHTML = ''; // LIMPA O CHAT ANTES DE RENDERIZAR PARA NÃO DUPLICAR
+            
             if(snap.exists()) {
                 snap.forEach(function(c) {
                     var m = c.val();
                     var isMe = m.author === 'Dentista';
-                    var align = isMe ? 'self-end bg-indigo-600 text-white' : 'self-start bg-gray-100 border text-gray-800';
+                    var align = isMe ? 'self-end bg-indigo-600 text-white' : 'self-start bg-gray-100 text-gray-800 border';
                     var imgHtml = m.media ? `<br><a href="${m.media.url}" target="_blank"><img src="${m.media.url}" class="mt-1 rounded-lg max-h-32 border border-white/30"></a>` : '';
+                    
                     var el = document.createElement('div');
                     el.className = `p-2 rounded-xl text-sm max-w-[90%] shadow-sm ${align}`;
-                    el.innerHTML = `<div class="font-bold text-[10px] opacity-80 mb-1 uppercase">${m.author}</div><div>${m.text}</div>${imgHtml}<div class="text-[10px] text-right opacity-60 mt-1">${formatDateTime(m.timestamp).split(' ')[1]}</div>`;
+                    el.innerHTML = `
+                        <div class="font-bold text-[10px] opacity-80 mb-1 uppercase">${m.author}</div>
+                        <div>${m.text}</div>
+                        ${imgHtml}
+                        <div class="text-[10px] text-right opacity-60 mt-1">${formatDateTime(m.timestamp).split(' ')[1]}</div>
+                    `;
                     div.appendChild(el);
                 });
                 div.scrollTop = div.scrollHeight;
+            } else {
+                div.innerHTML = '<p class="text-center text-gray-400 text-sm mt-10">Inicie o prontuário.</p>';
             }
         });
     }
@@ -348,80 +413,62 @@
                 var data = s.val();
                 for(var key in data) {
                     var item = data[key];
-                    div.innerHTML += `<div class="border-b pb-2 mb-2 p-2 hover:bg-gray-50 rounded"><div class="flex justify-between items-center"><span class="font-bold text-gray-700">${item.description}</span><span class="font-bold ${item.status==='Recebido'?'text-green-600':'text-yellow-600'} text-xs">${item.status}</span></div><div class="text-xs text-gray-400 flex justify-between mt-1"><span>${formatDateTime(item.dueDate).split(' ')[0]}</span><span>${formatCurrency(item.amount)}</span></div></div>`;
+                    var matsHTML = '';
+                    var matSnap = await db.ref(getFinancePath(currentUser.uid, 'receivable') + '/' + key + '/materials').once('value');
+                    if(matSnap.exists()) {
+                        var arr = [];
+                        matSnap.forEach(function(m) { arr.push(`${m.val().quantityUsed} ${m.val().unit} ${m.val().name}`); });
+                        matsHTML = `<div class="text-xs text-gray-500 mt-1 bg-gray-100 p-1 rounded">🛠️ ${arr.join(', ')}</div>`;
+                    }
+                    div.innerHTML += `<div class="border-b pb-2 mb-2 p-2 hover:bg-gray-50 rounded"><div class="flex justify-between items-center"><span class="font-bold text-gray-700">${item.description}</span><span class="font-bold ${item.status==='Recebido'?'text-green-600':'text-yellow-600'} text-xs">${item.status}</span></div><div class="text-xs text-gray-400 flex justify-between mt-1"><span>${formatDateTime(item.dueDate).split(' ')[0]}</span><span>${formatCurrency(item.amount)}</span></div>${matsHTML}</div>`;
                 }
             } else { div.innerHTML = '<i class="text-gray-400 text-xs">Sem registros.</i>'; }
         });
     }
 
     window.sendChat = async function(pid, author, txt) {
-        // Ajuste para suportar chamada direta ou via clique
         var input = document.getElementById('chat-msg');
         var msgText = txt || (input ? input.value : "");
-        
         if(!msgText && !selectedFile) return;
         
         var btn = document.querySelector('button[onclick*="sendChat"]');
         if(btn) btn.disabled = true;
-
+        
         var mediaData = null;
         if(selectedFile && window.uploadToCloudinary) {
             try { mediaData = await window.uploadToCloudinary(selectedFile); } catch(e){ alert("Erro upload"); if(btn) btn.disabled = false; return; }
         }
-        
-        var authName = author || 'Dentista';
 
         db.ref(getJournalPath(pid)).push({
             text: msgText || (mediaData ? "Anexo" : ""),
-            author: authName,
+            author: author || 'Dentista',
             media: mediaData,
             timestamp: new Date().toISOString()
         });
 
         if(input) input.value = '';
-        var fileIn = document.getElementById('chat-file');
-        if(fileIn) fileIn.value = '';
-        var prev = document.getElementById('file-preview');
-        if(prev) prev.classList.add('hidden');
+        if(document.getElementById('chat-file')) document.getElementById('chat-file').value = '';
+        if(document.getElementById('file-preview')) document.getElementById('file-preview').classList.add('hidden');
         selectedFile = null;
         if(btn) btn.disabled = false;
     };
 
-    // CORREÇÃO CRÍTICA DA IA (BOTÃO GIRANDO)
     window.askAI = async function(pid) {
         var p = allPatients.find(x => x.id === pid);
+        var prompt = `Paciente: ${p.name}. Histórico: ${p.treatmentGoal}. Resuma a evolução e sugira conduta.`;
         var btn = document.querySelector('button[title="IA"]');
-        var originalIcon = btn ? btn.innerHTML : '🤖';
-        
-        if(btn) {
-            btn.innerHTML = '<i class="bx bx-loader-alt bx-spin"></i>';
-            btn.disabled = true;
-        }
-
+        if(btn) btn.innerHTML = '...';
         try {
-            // Busca histórico
-            var snaps = await db.ref(getJournalPath(pid)).limitToLast(5).once('value');
-            var hist = "";
-            snaps.forEach(s => hist += `${s.val().author}: ${s.val().text}\n`);
-
-            var prompt = `Paciente: ${p.name}. Histórico Recente:\n${hist}\n\nComo dentista sênior, qual a sugestão clínica ou resposta para o paciente?`;
             var resp = await window.callGeminiAPI(prompt, "Analise.");
-            
-            // Envia resposta no chat
             window.sendChat(pid, 'IA (Auto)', resp);
-            
-        } catch (e) {
-            console.error(e);
-            alert("Erro IA: " + e.message);
-        } finally {
-            if(btn) {
-                btn.innerHTML = originalIcon;
-                btn.disabled = false;
-            }
-        }
+        } catch(e) { alert("Erro IA"); }
+        if(btn) btn.innerHTML = '<i class="bx bxs-magic-wand"></i>';
     };
 
-    // --- FINANCEIRO ---
+    // ==================================================================
+    // 7. FINANCEIRO & ESTOQUE
+    // ==================================================================
+
     function renderFinancialManager(container) {
         container.innerHTML = `
             <div class="p-8 bg-white shadow-lg rounded-2xl">
@@ -438,8 +485,9 @@
         window.renderReceivablesView = renderReceivablesView;
         window.renderExpensesView = renderExpensesView;
         
-        window.deleteTx = function(type, id) { if(confirm("Excluir?")) db.ref(getFinancePath(currentUser.uid, type) + '/' + id).remove(); };
-        window.deleteStock = function(id) { if(confirm("Remover?")) db.ref(getStockPath(currentUser.uid) + '/' + id).remove(); };
+        window.deleteTx = function(type, id) { if(confirm("Excluir registro?")) db.ref(getFinancePath(currentUser.uid, type) + '/' + id).remove(); };
+        window.deleteStock = function(id) { if(confirm("Remover item?")) db.ref(getStockPath(currentUser.uid) + '/' + id).remove(); };
+        
         window.settleTx = function(type, id) {
             if(!confirm("Confirmar baixa?")) return;
             var updates = { status: type === 'receivable' ? 'Recebido' : 'Pago' };
@@ -516,7 +564,7 @@
     };
     
     window.openStockModal = function() {
-        var html = `<form id="st-form" class="grid gap-2"><input id="s-name" placeholder="Nome" class="border p-2" required><input id="s-qty" type="number" placeholder="Qtd" class="border p-2" required><input id="s-unit" placeholder="Un" class="border p-2" required><button class="bg-green-600 text-white p-2 rounded">Salvar</button></form>`;
+        var html = `<form id="st-form" class="grid gap-2"><input id="s-name" placeholder="Nome" class="border p-2" required><input id="s-qty" type="number" placeholder="Qtd" class="border p-2" required><input id="s-unit" placeholder="Unidade" class="border p-2" required><button class="bg-green-600 text-white p-2 rounded">Salvar</button></form>`;
         openModal("Novo Material", html);
         document.getElementById('st-form').onsubmit = function(e) {
             e.preventDefault();
