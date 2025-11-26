@@ -7,24 +7,15 @@
     var API_KEY = config.API_KEY;
 
     async function callGeminiAPI(systemPrompt, userMessage) {
-        // 1. Validação
         if (!API_KEY || API_KEY.includes("SUA_CHAVE") || API_KEY.length < 10) {
             console.error("ERRO GEMINI: API Key inválida.");
-            return "Erro de Configuração: Chave API não encontrada. Verifique o arquivo config.js.";
+            return "Erro de Configuração: Chave API não encontrada.";
         }
 
         var url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${API_KEY}`;
         
-        // 2. TRUQUE SÊNIOR: Unificar System Prompt + User Message
-        // Isso resolve o erro "Invalid value at system_instruction" (Erro 400)
-        var finalPrompt = `
-CONTEXTO DO SISTEMA:
-${systemPrompt}
-
----
-MENSAGEM DO USUÁRIO:
-${userMessage}
-        `.trim();
+        // TRUQUE: Unifica System Prompt + User Message
+        var finalPrompt = `CONTEXTO DO SISTEMA:\n${systemPrompt}\n\n---\nMENSAGEM DO USUÁRIO:\n${userMessage}`.trim();
 
         var payload = {
             contents: [{ role: "user", parts: [{ text: finalPrompt }] }]
