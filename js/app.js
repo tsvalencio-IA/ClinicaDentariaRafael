@@ -1,9 +1,9 @@
 // ==================================================================
-// MÓDULO PRINCIPAL - DENTISTA INTELIGENTE (VERSÃO FINAL DEFINITIVA)
+// MÓDULO PRINCIPAL - DENTISTA INTELIGENTE (RESTAURAÇÃO FUNCIONAL)
 // ==================================================================
 (function() {
     
-    // 1. CONFIGURAÇÕES E ESTADO
+    // 1. CONFIGURAÇÕES
     var config = window.AppConfig;
     var appId = config ? config.APP_ID : 'dentista-inteligente-app';
     
@@ -11,9 +11,9 @@
     var currentUser = null;
     var currentView = 'dashboard';
     var isLoginMode = true; 
-    var selectedFile = null; // Para upload de arquivos no chat
+    var selectedFile = null;
     
-    // CACHES DE DADOS (VAR para estabilidade e acesso global no módulo)
+    // CACHES DE DADOS
     var allPatients = []; 
     var receivables = []; 
     var stockItems = []; 
@@ -27,14 +27,12 @@
     function getStockPath(uid) { return getAdminPath(uid, 'stock'); }
     function getFinancePath(uid, type) { return getAdminPath(uid, 'finance/' + type); }
     function getJournalPath(pid) { return 'artifacts/' + appId + '/patients/' + pid + '/journal'; }
-    // Helpers para caminhos aninhados
-    function getReceivableMaterialsPath(recId) { return getFinancePath(currentUser.uid, 'receivable') + '/' + recId + '/materials'; }
-    function getExpensePurchasedItemsPath(expId) { return getFinancePath(currentUser.uid, 'expenses') + '/' + expId + '/purchasedItems'; }
+    
+    // Helpers aninhados
+    function getRecMatPath(recId) { return getFinancePath(currentUser.uid, 'receivable') + '/' + recId + '/materials'; }
+    function getExpItemsPath(expId) { return getFinancePath(currentUser.uid, 'expenses') + '/' + expId + '/purchasedItems'; }
 
-    function formatCurrency(value) {
-        return 'R$ ' + parseFloat(value || 0).toFixed(2).replace('.', ',');
-    }
-
+    function formatCurrency(value) { return 'R$ ' + parseFloat(value || 0).toFixed(2).replace('.', ','); }
     function formatDateTime(iso) {
         if(!iso) return '-';
         var d = new Date(iso);
@@ -76,15 +74,11 @@
                 userRef.once('value').then(function(snapshot) {
                     var profile = snapshot.val();
                     
-                    // Libera se for dentista ou o admin mestre
                     if ((profile && profile.role === 'dentist') || user.email === 'admin@ts.com') {
                         currentUser = { uid: user.uid, email: user.email };
-                        
-                        // Auto-correção: Cria perfil se não existir
                         if (!profile && user.email === 'admin@ts.com') {
                             userRef.set({ email: user.email, role: 'dentist', registeredAt: new Date().toISOString() });
                         }
-                        
                         loadInitialData(); 
                         showUI();
                     } else {
@@ -100,15 +94,16 @@
     }
     
     function loadInitialData() {
-        // 1. Pacientes
+        // Carrega Pacientes
         db.ref(getAdminPath(currentUser.uid, 'patients')).on('value', function(s) {
             allPatients = [];
             if(s.exists()) s.forEach(function(c) { var p = c.val(); p.id = c.key; allPatients.push(p); });
             updateKPIs();
+            // Se estiver na tela, atualiza
             if(currentView === 'patients') renderPatientManager(document.getElementById('main-content'));
         });
 
-        // 2. Estoque
+        // Carrega Estoque
         db.ref(getStockPath(currentUser.uid)).on('value', function(s) {
             stockItems = [];
             if(s.exists()) s.forEach(function(c) { var i = c.val(); i.id = c.key; stockItems.push(i); });
@@ -116,7 +111,7 @@
             if(currentView === 'financials' && document.getElementById('stock-view')) renderStockView();
         });
         
-        // 3. Receitas
+        // Carrega Receitas
         db.ref(getFinancePath(currentUser.uid, 'receivable')).on('value', function(s) {
             receivables = [];
             if(s.exists()) s.forEach(function(c) { var r = c.val(); r.id = c.key; receivables.push(r); });
@@ -124,7 +119,7 @@
             if(currentView === 'financials' && document.getElementById('receivables-view')) renderReceivablesView();
         });
         
-        // 4. Despesas
+        // Carrega Despesas
         db.ref(getFinancePath(currentUser.uid, 'expenses')).on('value', function(s) {
             expenses = [];
             if(s.exists()) s.forEach(function(c) { var e = c.val(); e.id = c.key; expenses.push(e); });
@@ -139,16 +134,10 @@
         document.getElementById('dash-pat').textContent = allPatients.length;
         document.getElementById('dash-stk').textContent = stockItems.length;
         
-        // KPI Faturamento: Soma tudo que foi Recebido
-        var totalRec = receivables.reduce(function(acc, r) { 
-            return r.status === 'Recebido' ? acc + parseFloat(r.amount||0) : acc; 
-        }, 0);
+        var totalRec = receivables.reduce(function(acc, r) { return r.status === 'Recebido' ? acc + parseFloat(r.amount||0) : acc; }, 0);
         document.getElementById('dash-rec').textContent = formatCurrency(totalRec);
         
-        // KPI Despesas: Soma tudo que foi Pago
-        var totalExp = expenses.reduce(function(acc, e) { 
-            return e.status === 'Pago' ? acc + parseFloat(e.amount||0) : acc; 
-        }, 0);
+        var totalExp = expenses.reduce(function(acc, e) { return e.status === 'Pago' ? acc + parseFloat(e.amount||0) : acc; }, 0);
         document.getElementById('dash-exp').textContent = formatCurrency(totalExp);
     }
     
@@ -282,10 +271,12 @@
                 </div>
             </div>`;
         
-        // Expondo funções globais
+        // GARANTINDO QUE AS FUNÇÕES GLOBAIS ESTÃO EXPOSTAS
         window.openPatientModal = openPatientModal;
         window.deletePatient = deletePatient;
+        window.editPatient = editPatient;
         window.openJournal = openJournal;
+        window.openRecModal = openRecModal;
 
         var tbody = document.getElementById('patient-list-body');
         if(allPatients.length > 0) {
@@ -294,10 +285,11 @@
                     <tr class="border-b hover:bg-gray-50">
                         <td class="p-3 font-medium">${p.name}<br><span class="text-xs text-gray-400">${p.treatmentType}</span></td>
                         <td class="p-3 text-sm">${p.email || '-'}<br>${p.phone || '-'}</td>
-                        <td class="p-3 text-right">
-                            <button onclick="openJournal('${p.id}')" class="text-cyan-600 p-2 hover:bg-cyan-50 rounded-full mr-1" title="Prontuário"><i class='bx bx-file text-xl'></i></button>
-                            <button onclick="openPatientModal('${p.id}')" class="text-blue-600 p-2 hover:bg-blue-50 rounded-full mr-1" title="Editar"><i class='bx bx-edit text-xl'></i></button>
-                            <button onclick="deletePatient('${p.id}')" class="text-red-500 p-2 hover:bg-red-50 rounded-full" title="Excluir"><i class='bx bx-trash text-xl'></i></button>
+                        <td class="p-3 text-right flex justify-end gap-2">
+                            <button onclick="openRecModal('${p.id}')" class="text-green-600 hover:bg-green-100 p-2 rounded" title="Cobrar"><i class='bx bx-money text-xl'></i></button>
+                            <button onclick="openJournal('${p.id}')" class="text-cyan-600 hover:bg-cyan-100 p-2 rounded" title="Prontuário"><i class='bx bx-file text-xl'></i></button>
+                            <button onclick="editPatient('${p.id}')" class="text-blue-600 hover:bg-blue-100 p-2 rounded" title="Editar"><i class='bx bx-edit text-xl'></i></button>
+                            <button onclick="deletePatient('${p.id}')" class="text-red-500 hover:bg-red-100 p-2 rounded" title="Excluir"><i class='bx bx-trash text-xl'></i></button>
                         </td>
                     </tr>`;
             });
@@ -315,13 +307,14 @@
                 <input type="hidden" id="p-id" value="${isEdit ? p.id : ''}">
                 <div class="col-span-2"><label class="font-bold">Nome Completo</label><input id="p-name" class="w-full border p-2 rounded" value="${isEdit ? p.name : ''}" required></div>
                 <div><label class="font-bold">Email (Login)</label><input id="p-email" type="email" class="w-full border p-2 rounded" value="${isEdit ? p.email : ''}"></div>
-                <div><label class="font-bold">Telefone</label><input id="p-phone" class="w-full border p-2 rounded" value="${isEdit ? p.phone : ''}"></div>
+                <div><label class="font-bold">Telefone</label><input id="p-phone" class="w-full border p-2 rounded" value="${isEdit ? p.phone : ''}" placeholder="(00) 00000-0000"></div>
                 <div><label class="font-bold">CPF</label><input id="p-cpf" class="w-full border p-2 rounded" value="${isEdit ? p.cpf : ''}"></div>
                 <div><label class="font-bold">Tratamento</label>
                 <select id="p-type" class="w-full border p-2 rounded">
                     <option ${isEdit && p.treatmentType==='Geral'?'selected':''}>Geral</option>
                     <option ${isEdit && p.treatmentType==='Ortodontia'?'selected':''}>Ortodontia</option>
                     <option ${isEdit && p.treatmentType==='Implante'?'selected':''}>Implante</option>
+                    <option ${isEdit && p.treatmentType==='Estética'?'selected':''}>Estética</option>
                 </select></div>
                 <div class="col-span-2"><label class="font-bold">Endereço</label><input id="p-address" class="w-full border p-2 rounded" value="${isEdit ? p.address : ''}"></div>
                 <div class="col-span-2"><label class="font-bold">Meta Clínica</label><textarea id="p-goal" class="w-full border p-2 rounded" rows="2">${isEdit ? p.treatmentGoal : ''}</textarea></div>
@@ -350,6 +343,11 @@
             }
             closeModal();
         };
+    }
+
+    // Função Helper para Editar (agora existe)
+    function editPatient(id) {
+        openPatientModal(id);
     }
 
     function deletePatient(id) {
@@ -422,7 +420,7 @@
                     
                     var mediaHtml = '';
                     if(m.media && m.media.url) {
-                        mediaHtml = `<br><a href="${m.media.url}" target="_blank"><img src="${m.media.url}" class="mt-1 rounded-lg max-h-32 border"></a>`;
+                        mediaHtml = `<br><a href="${m.media.url}" target="_blank"><img src="${m.media.url}" class="mt-1 rounded-lg max-h-32 border border-white/30"></a>`;
                     }
 
                     var el = document.createElement('div');
@@ -451,7 +449,8 @@
                 for(var key in data) {
                     var item = data[key];
                     var matsHTML = '';
-                    var matSnap = await db.ref(getReceivableMaterialsPath(key)).once('value');
+                    // Busca materiais usados
+                    var matSnap = await db.ref(getFinancePath(currentUser.uid, 'receivable') + '/' + key + '/materials').once('value');
                     if(matSnap.exists()) {
                         var arr = [];
                         matSnap.forEach(function(m) { arr.push(`${m.val().quantityUsed} ${m.val().unit} ${m.val().name}`); });
@@ -539,7 +538,6 @@
         window.renderReceivablesView = renderReceivablesView;
         window.renderExpensesView = renderExpensesView;
         
-        // Funções globais
         window.deleteTx = function(type, id) { if(confirm("Excluir registro?")) db.ref(getFinancePath(currentUser.uid, type) + '/' + id).remove(); };
         window.deleteStock = function(id) { if(confirm("Remover item?")) db.ref(getStockPath(currentUser.uid) + '/' + id).remove(); };
         window.settleTx = function(type, id) {
@@ -622,7 +620,7 @@
         var div = document.getElementById('fin-content-area');
         div.innerHTML = `
             <div class="flex justify-between mb-3">
-                <h3 class="font-bold text-gray-700">Contas a Pagar (Despesas)</h3>
+                <h3 class="font-bold text-gray-700">Contas a Pagar</h3>
                 <button onclick="openExpModal()" class="bg-red-600 text-white px-3 py-1 rounded text-sm">+ Nova Despesa</button>
             </div>
             <div id="expenses-view" class="space-y-2"></div>`;
@@ -747,7 +745,8 @@
         var html = `<div class="text-sm mb-2">Baixa de Estoque:</div><div class="flex gap-2"><select id="m-sel" class="border p-1 flex-grow text-sm">${opts}</select><input id="m-q" type="number" placeholder="Qtd" class="border w-16 text-sm"><button id="m-add" class="bg-red-500 text-white px-4 py-2 rounded font-bold h-[42px]">Baixar</button></div><div id="used-list" class="text-xs mt-2 border-t pt-2"></div>`;
         openModal("Materiais Gastos", html);
         
-        var ref = db.ref(getRecMatPath(recId));
+        var ref = db.ref(getAdminPath(currentUser.uid, `finance/receivable/${recId}/materials`));
+        
         ref.on('value', function(s) {
             var d = document.getElementById('used-list');
             if(d) {
@@ -772,7 +771,7 @@
         var html = `<div class="text-sm mb-2">Entrada de Estoque:</div><div class="grid grid-cols-3 gap-1"><input id="p-n" placeholder="Item" class="col-span-2 border p-1 text-sm"><input id="p-q" type="number" placeholder="Qtd" class="border p-1 text-sm"><input id="p-u" placeholder="Un" class="border p-1 text-sm"><button id="p-ok" class="bg-green-600 text-white col-span-3 text-sm py-1 rounded">Adicionar</button></div><div id="pur-list" class="text-xs mt-2 border-t pt-2"></div>`;
         openModal("Itens da Nota", html);
         
-        var ref = db.ref(getExpItemsPath(expId));
+        var ref = db.ref(getAdminPath(currentUser.uid, `finance/expenses/${expId}/purchasedItems`));
         ref.on('value', function(s) {
             var d = document.getElementById('pur-list');
             if(d) { d.innerHTML = ''; if(s.exists()) s.forEach(function(x){ d.innerHTML += `<div>+ ${x.val().quantityPurchased} ${x.val().unit} ${x.val().name}</div>`; }); }
@@ -785,13 +784,13 @@
                 var exist = stockItems.find(function(x){ return x.name.toLowerCase() === n.toLowerCase(); });
                 if(exist) await db.ref(getStockPath(currentUser.uid) + '/' + exist.id).update({ quantity: parseFloat(exist.quantity) + q });
                 else await db.ref(getStockPath(currentUser.uid)).push({ name: n, quantity: q, unit: u, cost: 0 });
-                document.getElementById('p-n').value = '';
+                document.getElementById('p-n').value = ''; document.getElementById('p-q').value = '';
             }
         };
     };
 
-    // --- MODAL ---
-    function openModal(title, html, maxW) {
+    // --- UTILS DE MODAL ---
+    function openModal(title, html, maxWidth) {
         var m = document.getElementById('app-modal');
         m.querySelector('.modal-content').className = 'modal-content w-full ' + (maxWidth || 'max-w-md');
         document.getElementById('modal-title').textContent = title;
@@ -804,7 +803,9 @@
         document.getElementById('app-modal').classList.remove('flex');
     }
 
-    // START
+    // ==================================================================
+    // INICIALIZAÇÃO
+    // ==================================================================
     document.addEventListener('DOMContentLoaded', function() {
         initializeFirebase();
         document.getElementById('close-modal').addEventListener('click', closeModal);
