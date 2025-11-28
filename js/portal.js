@@ -1,5 +1,5 @@
 // ==================================================================
-// MÓDULO PORTAL DO PACIENTE (COM MEMÓRIA ANTI-REPETIÇÃO)
+// MÓDULO PORTAL DO PACIENTE (CORRIGIDO: VISÃO IA + TRAVA DE BOTÃO)
 // ==================================================================
 (function() {
     var config = window.AppConfig;
@@ -102,8 +102,10 @@
         document.getElementById('patient-login').classList.remove('hidden');
         document.getElementById('patient-app').classList.add('hidden');
         var btn = document.getElementById('p-submit-btn');
-        btn.disabled = false;
-        btn.textContent = isLoginMode ? "Acessar Meu Portal" : "Criar Minha Senha";
+        if(btn) {
+            btn.disabled = false;
+            btn.textContent = isLoginMode ? "Acessar Meu Portal" : "Criar Minha Senha";
+        }
     }
 
     async function findMyData(email) {
@@ -217,15 +219,25 @@
 
     async function sendMessage() {
         var input = document.getElementById('p-input');
+        var btnSend = document.getElementById('p-send');
         var text = input.value;
+        
         if (!text && !selectedFile) return;
+
+        // 1. TRAVA O BOTÃO PARA EVITAR DUPLICAÇÃO
+        btnSend.disabled = true;
 
         var mediaData = null;
         if (selectedFile && window.uploadToCloudinary) {
-            try { mediaData = await window.uploadToCloudinary(selectedFile); } catch (e) { alert("Erro ao enviar imagem."); return; }
+            try { mediaData = await window.uploadToCloudinary(selectedFile); } 
+            catch (e) { 
+                alert("Erro ao enviar imagem."); 
+                btnSend.disabled = false; 
+                return; 
+            }
         }
 
-        // Salva mensagem do paciente
+        // 2. SALVA NO FIREBASE
         var newMessageRef = db.ref('artifacts/' + appId + '/patients/' + myProfile.id + '/journal').push();
         await newMessageRef.set({
             text: text || (mediaData ? "Anexo" : ""),
@@ -238,21 +250,25 @@
         selectedFile = null;
         document.getElementById('img-preview-area').classList.add('hidden');
 
-        if (window.callGeminiAPI && text) {
-            // --- CONSTRUÇÃO INTELIGENTE DO HISTÓRICO ---
-            // AQUI ESTÁ A CORREÇÃO: Identificamos claramente quem falou o quê.
-            
+        // 3. CHAMA A IA (AGORA PASSANDO A IMAGEM!)
+        if (window.callGeminiAPI) {
+            // Captura URL da imagem se houver
+            var imageUrl = mediaData ? mediaData.url : null;
+
+            // Busca histórico para contexto
             var journalRef = db.ref('artifacts/' + appId + '/patients/' + myProfile.id + '/journal');
-            var snapshot = await journalRef.limitToLast(12).once('value'); // Pega mais contexto
+            var snapshot = await journalRef.limitToLast(15).once('value');
             var history = "";
             
             if (snapshot.exists()) {
                 snapshot.forEach(function(c) {
                     var msg = c.val();
                     if(msg.author !== 'Nota Interna') {
-                        // Se for a IA falando, marcamos como "Júl-IA" para ela se reconhecer
-                        var speaker = (msg.author === 'IA (Auto)' || msg.author === 'Dentista') ? 'VOCÊ (Júl-IA)' : 'PACIENTE';
-                        history += `${speaker}: ${msg.text}\n`;
+                        // Diferencia claramente quem é quem para a IA
+                        var speaker = (msg.author === 'IA (Auto)' || msg.author === 'Dentista') ? 'JÚL-IA' : 'PACIENTE';
+                        var content = msg.text;
+                        if (msg.media) content += " [Enviou uma Foto]";
+                        history += `${speaker}: ${content}\n`;
                     }
                 });
             }
@@ -263,31 +279,35 @@
 
             var context = "";
             if (aiDirectives) {
-                // Injeta as diretrizes com um comando FORTE de não repetição
                 context = `
                     ${aiDirectives}
                     
-                    --- CONTEXTO EM TEMPO REAL ---
-                    DATA/HORA ATUAL: ${timeString} (${dayOfWeek}).
+                    --- CONTEXTO ATUAL ---
+                    DATA/HORA: ${timeString} (${dayOfWeek}).
                     
-                    --- HISTÓRICO DA CONVERSA (LEIA COM ATENÇÃO) ---
+                    --- MEMÓRIA DA CONVERSA ---
                     ${history}
                     
-                    --- ORDEM DE EXECUÇÃO ---
-                    1. Analise o histórico acima.
-                    2. Se você (Júl-IA) JÁ SE APRESENTOU nas últimas mensagens, É PROIBIDO se apresentar de novo.
-                    3. Responda APENAS o que o paciente perguntou agora, de forma direta e fluida, como uma conversa contínua no WhatsApp.
-                    4. Não repita saudações ("Olá", "Sou Júl-IA") se a conversa já está rolando. Vá direto ao ponto.
+                    --- INSTRUÇÃO FINAL ---
+                    Você é a Júl-IA. Responda à última mensagem do PACIENTE.
+                    1. Se o histórico mostra que você já se apresentou, NÃO SE APRESENTE DE NOVO.
+                    2. Se o paciente enviou uma foto, CONFIRME que viu (ex: "Recebi a foto!").
+                    3. Seja direta, curta e humana (estilo WhatsApp).
                 `;
             } else {
-                context = `ATUE COMO: Secretária. Não se repita. Histórico: ${history}. Responda ao paciente.`;
+                context = `ATUE COMO: Secretária. DATA: ${timeString}. HISTÓRICO: ${history}. O paciente mandou foto? Se sim, diga que vai mostrar ao Dr.`;
             }
 
-            var reply = await window.callGeminiAPI(context, text);
+            // Passa o texto E a URL da imagem para a IA
+            var reply = await window.callGeminiAPI(context, text, imageUrl);
+            
             db.ref('artifacts/' + appId + '/patients/' + myProfile.id + '/journal').push({
                 text: reply, author: 'IA (Auto)', timestamp: new Date().toISOString()
             });
         }
+
+        // Libera o botão
+        btnSend.disabled = false;
     }
 
     document.addEventListener('DOMContentLoaded', init);
