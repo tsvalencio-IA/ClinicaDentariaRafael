@@ -2,91 +2,73 @@
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
-    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">
-    <title>Portal do Paciente | Dentista IA</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dentista Inteligente ERP</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    
     <link href="https://cdn.jsdelivr.net/npm/boxicons@2.1.4/css/boxicons.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="css/styles.css">
+    
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        .animate-fade-in { animation: fadeIn 0.3s ease-in-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+    </style>
 </head>
-<body class="bg-blue-50 min-h-screen flex flex-col font-sans">
+<body class="bg-gray-100 h-screen overflow-hidden flex flex-col">
 
-    <div id="patient-login" class="flex flex-col items-center justify-center min-h-screen p-6">
-        <div class="bg-white p-8 rounded-2xl shadow-xl w-full max-w-sm text-center">
-            <div class="mb-6">
-                <i class='bx bxs-smile text-6xl text-blue-500'></i>
+    <div id="login-screen" class="fixed inset-0 bg-gradient-to-br from-indigo-900 to-blue-800 z-[100] flex items-center justify-center p-4">
+        <div class="bg-white p-8 rounded-2xl shadow-2xl w-full max-w-sm">
+            <div class="text-center mb-6">
+                <i class='bx bxs-tooth text-6xl text-indigo-600'></i>
+                <h1 class="text-2xl font-bold text-gray-800 mt-2">Dentista IA</h1>
+                <p class="text-sm text-gray-500">Gestão Inteligente & ERP</p>
             </div>
-            <h1 class="text-2xl font-bold text-gray-800 mb-2">Bem-vindo, Paciente</h1>
-            <p class="text-gray-500 mb-6 text-sm">Acesse seu prontuário e fale com a clínica.</p>
-            
-            <form id="p-login-form" class="space-y-4">
-                <input type="email" id="p-email" placeholder="Seu E-mail" class="w-full p-3 border border-gray-200 rounded-xl bg-gray-50 focus:bg-white focus:ring-2 focus:ring-blue-200 outline-none transition" required>
-                <input type="password" id="p-pass" placeholder="Sua Senha" class="w-full p-3 border border-gray-200 rounded-xl bg-gray-50 focus:bg-white focus:ring-2 focus:ring-blue-200 outline-none transition" required>
-                <button type="submit" class="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl shadow-lg shadow-blue-200 transition transform active:scale-95">
-                    Acessar Meu Portal
-                </button>
+            <form id="auth-form" class="space-y-4">
+                <input type="email" id="auth-email" placeholder="Email" class="w-full p-3 border rounded-lg" required>
+                <input type="password" id="auth-password" placeholder="Senha" class="w-full p-3 border rounded-lg" required>
+                <button id="auth-submit-btn" class="w-full py-3 bg-indigo-600 text-white font-bold rounded-lg hover:bg-indigo-700 transition">Entrar</button>
             </form>
-            <p id="p-msg" class="text-red-500 text-xs mt-3 h-4"></p>
+            <button id="toggle-auth-mode" class="w-full text-center text-indigo-600 text-sm mt-4 hover:underline">Criar conta</button>
         </div>
     </div>
 
-    <div id="patient-app" class="hidden flex-grow flex flex-col max-w-md mx-auto w-full bg-white shadow-2xl min-h-screen relative">
-        
-        <header class="bg-blue-600 text-white p-6 rounded-b-3xl shadow-lg z-10">
-            <div class="flex justify-between items-center mb-4">
-                <div>
-                    <h2 class="text-xl font-bold" id="p-name">Carregando...</h2>
-                    <p class="text-blue-200 text-xs" id="p-treatment">...</p>
-                </div>
-                <button id="p-logout" class="bg-blue-700 p-2 rounded-full hover:bg-blue-800"><i class='bx bx-log-out text-xl'></i></button>
-            </div>
-            
-            <div class="flex justify-between bg-blue-500 bg-opacity-50 p-3 rounded-xl backdrop-blur-sm">
-                <div class="text-center w-1/2 border-r border-blue-400">
-                    <p class="text-xs text-blue-100 uppercase tracking-wider">Status</p>
-                    <p class="font-bold text-sm mt-1" id="p-status">Ativo</p>
-                </div>
-                <div class="text-center w-1/2">
-                    <p class="text-xs text-blue-100 uppercase tracking-wider">Financeiro</p>
-                    <p class="font-bold text-sm mt-1" id="p-financial-status">Verificar</p>
-                </div>
-            </div>
-        </header>
-
-        <main class="flex-grow overflow-y-auto p-4 pb-24 space-y-6">
-            
-            <section>
-                <h3 class="font-bold text-gray-800 mb-3 flex items-center"><i class='bx bx-chat mr-2 text-blue-500'></i> Conversa & Evolução</h3>
-                <div id="p-timeline" class="space-y-3 pb-4">
-                    <p class="text-center text-gray-400 text-sm py-4">Carregando mensagens...</p>
-                </div>
-            </section>
-
-            <section>
-                <h3 class="font-bold text-gray-800 mb-3 flex items-center"><i class='bx bx-wallet mr-2 text-green-500'></i> Meus Pagamentos</h3>
-                <div id="p-finance" class="space-y-2">
-                    </div>
-            </section>
-
-        </main>
-
-        <div class="absolute bottom-0 w-full bg-white p-3 border-t border-gray-100 pb-6 z-20">
-            <div id="img-preview-area" class="hidden mb-2 p-2 bg-gray-100 rounded-lg flex justify-between items-center">
-                <span class="text-xs text-gray-600 truncate" id="img-name">imagem.jpg</span>
-                <button id="remove-img" class="text-red-500"><i class='bx bx-x'></i></button>
-            </div>
-
-            <div class="flex gap-2 items-center">
-                <button id="btn-camera" class="text-gray-500 hover:text-blue-600 p-2 rounded-full transition"><i class='bx bxs-camera text-2xl'></i></button>
-                <input type="file" id="file-input" class="hidden" accept="image/*">
-                
-                <input type="text" id="p-input" class="flex-grow bg-gray-100 border-0 rounded-full px-4 py-3 outline-none focus:ring-2 focus:ring-blue-500 transition text-sm" placeholder="Digite sua dúvida...">
-                
-                <button id="p-send" class="bg-blue-600 text-white p-3 rounded-full hover:bg-blue-700 shadow-md transition transform active:scale-90">
-                    <i class='bx bxs-send'></i>
-                </button>
-            </div>
+    <header class="md:hidden bg-indigo-900 text-white p-4 flex justify-between items-center shadow-md z-40 shrink-0">
+        <div class="font-bold text-lg flex items-center gap-2">
+            <i class='bx bxs-tooth text-2xl'></i>
+            <span>DentIA</span>
         </div>
+        <button id="mobile-menu-btn" class="text-white text-3xl focus:outline-none active:scale-90 transition">
+            <i class='bx bx-menu'></i>
+        </button>
+    </header>
 
+    <div id="app-container" class="hidden flex h-screen relative">
+        
+        <div id="mobile-overlay" class="fixed inset-0 bg-black/50 z-30 hidden md:hidden backdrop-blur-sm transition-opacity"></div>
+
+        <aside id="sidebar" class="fixed inset-y-0 left-0 z-40 w-64 bg-indigo-900 text-white flex flex-col shadow-2xl transform -translate-x-full transition-transform duration-300 ease-in-out md:relative md:translate-x-0">
+            <div class="p-6 text-2xl font-bold flex items-center gap-3 border-b border-indigo-800">
+                <i class='bx bxs-tooth text-white'></i>
+                <span>🦷DentIA</span>
+            </div>
+            <nav id="nav-menu" class="flex-grow p-4 space-y-2 overflow-y-auto"></nav>
+            <button id="logout-button" class="p-4 flex items-center text-red-300 hover:bg-red-900 hover:text-white transition mt-auto border-t border-indigo-800">
+                <i class='bx bx-log-out text-xl mr-2'></i> Sair
+            </button>
+        </aside>
+        
+        <main id="main-content" class="flex-grow p-0 bg-gray-100 overflow-hidden relative flex flex-col w-full"></main>
+    </div>
+
+    <div id="app-modal" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-[100] items-center justify-center p-4">
+        <div class="modal-content bg-white w-full max-w-md rounded-xl shadow-2xl flex flex-col max-h-[90vh] animate-fade-in">
+            <div class="flex justify-between items-center p-4 border-b">
+                <h3 id="modal-title" class="font-bold text-lg text-gray-800">Título</h3>
+                <button id="close-modal" class="text-gray-400 hover:text-red-500 text-2xl">&times;</button>
+            </div>
+            <div id="modal-body" class="p-6 overflow-y-auto"></div>
+        </div>
     </div>
 
     <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
@@ -94,10 +76,12 @@
     <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
 
     <script src="js/config.js"></script>
-    <script src="js/cloudinary.js"></script>
     <script src="js/ai.js"></script>
+    <script src="js/cloudinary.js"></script>
     
-    <script src="js/portal.js"></script>
+    <script src="js/core.js"></script>
+    <script src="js/patients.js"></script>
+    <script src="js/finance.js"></script>
 
 </body>
 </html>
