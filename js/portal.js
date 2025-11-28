@@ -1,5 +1,5 @@
 // ==================================================================
-// MÓDULO PORTAL DO PACIENTE (COM MEMÓRIA DE CONVERSA E RODAPÉ)
+// MÓDULO PORTAL DO PACIENTE (COM MEMÓRIA ANTI-REPETIÇÃO)
 // ==================================================================
 (function() {
     var config = window.AppConfig;
@@ -239,16 +239,20 @@
         document.getElementById('img-preview-area').classList.add('hidden');
 
         if (window.callGeminiAPI && text) {
-            // BUSCA HISTÓRICO PARA DAR MEMÓRIA À IA
+            // --- CONSTRUÇÃO INTELIGENTE DO HISTÓRICO ---
+            // AQUI ESTÁ A CORREÇÃO: Identificamos claramente quem falou o quê.
+            
             var journalRef = db.ref('artifacts/' + appId + '/patients/' + myProfile.id + '/journal');
-            var snapshot = await journalRef.limitToLast(10).once('value');
+            var snapshot = await journalRef.limitToLast(12).once('value'); // Pega mais contexto
             var history = "";
             
             if (snapshot.exists()) {
                 snapshot.forEach(function(c) {
                     var msg = c.val();
                     if(msg.author !== 'Nota Interna') {
-                        history += `[${msg.author}]: ${msg.text}\n`;
+                        // Se for a IA falando, marcamos como "Júl-IA" para ela se reconhecer
+                        var speaker = (msg.author === 'IA (Auto)' || msg.author === 'Dentista') ? 'VOCÊ (Júl-IA)' : 'PACIENTE';
+                        history += `${speaker}: ${msg.text}\n`;
                     }
                 });
             }
@@ -259,22 +263,24 @@
 
             var context = "";
             if (aiDirectives) {
+                // Injeta as diretrizes com um comando FORTE de não repetição
                 context = `
                     ${aiDirectives}
                     
-                    --- CONTEXTO ATUAL ---
-                    DATA/HORA: ${timeString} (${dayOfWeek}).
+                    --- CONTEXTO EM TEMPO REAL ---
+                    DATA/HORA ATUAL: ${timeString} (${dayOfWeek}).
                     
-                    HISTÓRICO DA CONVERSA (MEMÓRIA):
+                    --- HISTÓRICO DA CONVERSA (LEIA COM ATENÇÃO) ---
                     ${history}
                     
-                    --- INSTRUÇÃO AGORA ---
-                    Responda à última mensagem do Paciente (${myProfile.name}).
-                    NÃO se apresente novamente se já fez isso no histórico.
-                    Seja fluida, natural e aja como uma pessoa no WhatsApp.
+                    --- ORDEM DE EXECUÇÃO ---
+                    1. Analise o histórico acima.
+                    2. Se você (Júl-IA) JÁ SE APRESENTOU nas últimas mensagens, É PROIBIDO se apresentar de novo.
+                    3. Responda APENAS o que o paciente perguntou agora, de forma direta e fluida, como uma conversa contínua no WhatsApp.
+                    4. Não repita saudações ("Olá", "Sou Júl-IA") se a conversa já está rolando. Vá direto ao ponto.
                 `;
             } else {
-                context = `ATUE COMO: Secretária. DATA: ${timeString}. HISTÓRICO: ${history}. Responda ao paciente.`;
+                context = `ATUE COMO: Secretária. Não se repita. Histórico: ${history}. Responda ao paciente.`;
             }
 
             var reply = await window.callGeminiAPI(context, text);
