@@ -1,5 +1,5 @@
 // ==================================================================
-// MÓDULO PORTAL DO PACIENTE (COM CORREÇÃO DE FLUXO DE CADASTRO)
+// MÓDULO PORTAL DO PACIENTE (COM MEMÓRIA DE CONVERSA E RODAPÉ)
 // ==================================================================
 (function() {
     var config = window.AppConfig;
@@ -13,11 +13,9 @@
         db = firebase.database();
         auth = firebase.auth();
 
-        // Monitora estado de login
         auth.onAuthStateChanged(function(user) {
             if (user) {
                 currentUser = user;
-                // Pequeno delay para garantir que o banco carregue após cadastro
                 document.getElementById('p-submit-btn').textContent = "Carregando...";
                 setTimeout(() => findMyData(user.email), 1000); 
             } else {
@@ -136,11 +134,10 @@
             if (found) {
                 loadInterface();
             } else { 
-                // Se não encontrou, deleta o user criado para não ficar "preso" num login sem dados
                 var user = auth.currentUser;
                 user.delete().then(function() {
                     alert("Atenção: Seu email (" + email + ") não foi encontrado no cadastro da clínica.\n\nPor favor, peça para o dentista cadastrar seu email primeiro.");
-                    location.reload(); // Recarrega para limpar tudo
+                    location.reload(); 
                 }).catch(function(error) {
                     auth.signOut();
                     alert("Email não cadastrado pela clínica.");
@@ -228,7 +225,9 @@
             try { mediaData = await window.uploadToCloudinary(selectedFile); } catch (e) { alert("Erro ao enviar imagem."); return; }
         }
 
-        db.ref('artifacts/' + appId + '/patients/' + myProfile.id + '/journal').push({
+        // Salva mensagem do paciente
+        var newMessageRef = db.ref('artifacts/' + appId + '/patients/' + myProfile.id + '/journal').push();
+        await newMessageRef.set({
             text: text || (mediaData ? "Anexo" : ""),
             author: 'Paciente',
             media: mediaData,
@@ -240,11 +239,42 @@
         document.getElementById('img-preview-area').classList.add('hidden');
 
         if (window.callGeminiAPI && text) {
+            // BUSCA HISTÓRICO PARA DAR MEMÓRIA À IA
+            var journalRef = db.ref('artifacts/' + appId + '/patients/' + myProfile.id + '/journal');
+            var snapshot = await journalRef.limitToLast(10).once('value');
+            var history = "";
+            
+            if (snapshot.exists()) {
+                snapshot.forEach(function(c) {
+                    var msg = c.val();
+                    if(msg.author !== 'Nota Interna') {
+                        history += `[${msg.author}]: ${msg.text}\n`;
+                    }
+                });
+            }
+
+            var now = new Date();
+            var timeString = now.toLocaleDateString('pt-BR') + ' às ' + now.toLocaleTimeString('pt-BR');
+            var dayOfWeek = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'][now.getDay()];
+
             var context = "";
             if (aiDirectives) {
-                context = `${aiDirectives}\n--- MODO 1 (SECRETÁRIA) ---\nPaciente: ${myProfile.name}\nMsg: "${text}"`;
+                context = `
+                    ${aiDirectives}
+                    
+                    --- CONTEXTO ATUAL ---
+                    DATA/HORA: ${timeString} (${dayOfWeek}).
+                    
+                    HISTÓRICO DA CONVERSA (MEMÓRIA):
+                    ${history}
+                    
+                    --- INSTRUÇÃO AGORA ---
+                    Responda à última mensagem do Paciente (${myProfile.name}).
+                    NÃO se apresente novamente se já fez isso no histórico.
+                    Seja fluida, natural e aja como uma pessoa no WhatsApp.
+                `;
             } else {
-                context = `ATUE COMO: Secretária. PACIENTE: ${myProfile.name}. MSG: "${text}"`;
+                context = `ATUE COMO: Secretária. DATA: ${timeString}. HISTÓRICO: ${history}. Responda ao paciente.`;
             }
 
             var reply = await window.callGeminiAPI(context, text);
