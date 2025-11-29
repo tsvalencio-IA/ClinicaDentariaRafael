@@ -1,5 +1,5 @@
 // ==================================================================
-// MÓDULO PORTAL DO PACIENTE (VERSÃO FINAL: MEMÓRIA + VISÃO + LOGIN)
+// MÓDULO PORTAL DO PACIENTE (V12 - BLOQUEIO DE REPETIÇÃO RÍGIDO)
 // ==================================================================
 (function() {
     var config = window.AppConfig;
@@ -131,7 +131,6 @@
                                 myDentistUid = dentistSnap.key;
                                 found = true;
                                 
-                                // Carrega Cérebro da IA
                                 db.ref('artifacts/' + appId + '/users/' + myDentistUid + '/aiConfig/directives').on('value', function(brainSnap) {
                                     if(brainSnap.exists()) {
                                         aiDirectives = brainSnap.val().promptDirectives;
@@ -146,11 +145,10 @@
             if (found) {
                 loadInterface();
             } else { 
-                // Se não achou, remove o user do Auth para não bugar o login
                 var user = auth.currentUser;
                 user.delete().catch(function(e){console.log(e)});
                 auth.signOut();
-                alert("Email não encontrado no sistema da clínica.\nPeça para seu dentista te cadastrar primeiro.");
+                alert("Email não cadastrado pelo dentista.");
                 location.reload();
             }
         });
@@ -163,7 +161,6 @@
         document.getElementById('p-treatment').textContent = myProfile.treatmentType || 'Geral';
         document.getElementById('p-status').textContent = 'Ativo';
         
-        // Garante rodapé
         var footer = document.querySelector('#patient-app footer');
         if(!footer) {
              var f = document.createElement('footer');
@@ -185,7 +182,7 @@
             if (snap.exists()) {
                 snap.forEach(function(c) {
                     var msg = c.val();
-                    if (msg.author === 'Nota Interna') return; // Filtra notas internas
+                    if (msg.author === 'Nota Interna') return;
 
                     var isMe = msg.author === 'Paciente';
                     var align = isMe ? 'ml-auto bg-blue-600 text-white' : 'mr-auto bg-gray-100 text-gray-800 border';
@@ -233,7 +230,6 @@
         
         if (!text && !selectedFile) return;
 
-        // Trava botão para evitar duplo envio
         btnSend.disabled = true;
 
         var mediaData = null;
@@ -246,7 +242,6 @@
             }
         }
 
-        // Salva no Firebase
         var newMessageRef = db.ref('artifacts/' + appId + '/patients/' + myProfile.id + '/journal').push();
         await newMessageRef.set({
             text: text || (mediaData ? "Anexo" : ""),
@@ -259,23 +254,22 @@
         selectedFile = null;
         document.getElementById('img-preview-area').classList.add('hidden');
 
-        // CHAMA A IA
         if (window.callGeminiAPI) {
             var imageUrl = mediaData ? mediaData.url : null;
 
-            // Recupera histórico recente para contexto
+            // BUSCA HISTÓRICO (AQUI É A MÁGICA DA MEMÓRIA)
             var journalRef = db.ref('artifacts/' + appId + '/patients/' + myProfile.id + '/journal');
-            var snapshot = await journalRef.limitToLast(10).once('value');
+            var snapshot = await journalRef.limitToLast(15).once('value');
             var history = "";
             
             if (snapshot.exists()) {
                 snapshot.forEach(function(c) {
                     var msg = c.val();
                     if(msg.author !== 'Nota Interna') {
-                        // Define quem falou para a IA entender a conversa
-                        var role = (msg.author === 'IA (Auto)' || msg.author === 'Dentista') ? 'VOCÊ (IA)' : 'PACIENTE';
+                        // Identifica claramente quem falou para a IA não se perder
+                        var role = (msg.author === 'IA (Auto)' || msg.author === 'Dentista') ? 'ASSISTENTE' : 'PACIENTE';
                         var content = msg.text;
-                        if(msg.media) content += " [Enviou Foto]";
+                        if (msg.media) content += " [Enviou Foto]";
                         history += `${role}: ${content}\n`;
                     }
                 });
@@ -287,23 +281,24 @@
 
             var context = "";
             if (aiDirectives) {
-                // Injeta diretrizes + tempo + histórico
                 context = `
                     ${aiDirectives}
                     
-                    --- SITUAÇÃO ATUAL ---
+                    === SITUAÇÃO ATUAL ===
                     DATA: ${timeString} (${dayOfWeek}).
+                    PACIENTE: ${myProfile.name}.
                     
-                    --- HISTÓRICO RECENTE (Use para não se repetir) ---
+                    === HISTÓRICO DA CONVERSA (LEIA COM ATENÇÃO) ===
                     ${history}
                     
-                    --- COMANDO ---
-                    Responda ao PACIENTE (${myProfile.name}). 
-                    Se no histórico você já se apresentou, NÃO se apresente de novo.
-                    Seja natural e contínua.
+                    === SUAS REGRAS DE RESPOSTA AGORA ===
+                    1. Analise o HISTÓRICO acima.
+                    2. Se você (ASSISTENTE) já se apresentou ("Sou a Júl-IA"), VOCÊ ESTÁ PROIBIDA DE SE APRESENTAR NOVAMENTE.
+                    3. Responda APENAS a última fala do Paciente.
+                    4. Seja contínua. Aja como um chat fluido de WhatsApp.
                 `;
             } else {
-                context = `ATUE COMO: Secretária. DATA: ${timeString}. HISTÓRICO: ${history}. Responda ao paciente de forma breve.`;
+                context = `ATUE COMO: Secretária. DATA: ${timeString}. HISTÓRICO: ${history}. Não se repita. Responda ao paciente.`;
             }
 
             var reply = await window.callGeminiAPI(context, text, imageUrl);
