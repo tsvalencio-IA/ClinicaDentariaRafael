@@ -1,5 +1,5 @@
 // ==================================================================
-// MÓDULO PORTAL DO PACIENTE (V12 - BLOQUEIO DE REPETIÇÃO RÍGIDO)
+// MÓDULO PORTAL: MEMÓRIA DE ELEFANTE & FLUXO CONTÍNUO
 // ==================================================================
 (function() {
     var config = window.AppConfig;
@@ -182,7 +182,7 @@
             if (snap.exists()) {
                 snap.forEach(function(c) {
                     var msg = c.val();
-                    if (msg.author === 'Nota Interna') return;
+                    if (msg.author === 'Nota Interna') return; 
 
                     var isMe = msg.author === 'Paciente';
                     var align = isMe ? 'ml-auto bg-blue-600 text-white' : 'mr-auto bg-gray-100 text-gray-800 border';
@@ -242,8 +242,9 @@
             }
         }
 
-        var newMessageRef = db.ref('artifacts/' + appId + '/patients/' + myProfile.id + '/journal').push();
-        await newMessageRef.set({
+        // 1. Salva mensagem no banco PRIMEIRO
+        var journalRef = db.ref('artifacts/' + appId + '/patients/' + myProfile.id + '/journal');
+        await journalRef.push({
             text: text || (mediaData ? "Anexo" : ""),
             author: 'Paciente',
             media: mediaData,
@@ -254,22 +255,22 @@
         selectedFile = null;
         document.getElementById('img-preview-area').classList.add('hidden');
 
+        // 2. Agora monta o histórico COM a mensagem nova que acabou de ser enviada
         if (window.callGeminiAPI) {
             var imageUrl = mediaData ? mediaData.url : null;
 
-            // BUSCA HISTÓRICO (AQUI É A MÁGICA DA MEMÓRIA)
-            var journalRef = db.ref('artifacts/' + appId + '/patients/' + myProfile.id + '/journal');
-            var snapshot = await journalRef.limitToLast(15).once('value');
+            // Pega as últimas 20 mensagens para garantir contexto longo
+            var snapshot = await journalRef.limitToLast(20).once('value');
             var history = "";
             
             if (snapshot.exists()) {
                 snapshot.forEach(function(c) {
                     var msg = c.val();
                     if(msg.author !== 'Nota Interna') {
-                        // Identifica claramente quem falou para a IA não se perder
-                        var role = (msg.author === 'IA (Auto)' || msg.author === 'Dentista') ? 'ASSISTENTE' : 'PACIENTE';
+                        // Formatação de Roteiro de Teatro para a IA não se perder
+                        var role = (msg.author === 'IA (Auto)' || msg.author === 'Dentista') ? 'JÚL-IA' : 'PACIENTE';
                         var content = msg.text;
-                        if (msg.media) content += " [Enviou Foto]";
+                        if (msg.media) content += " [ENVIOU UMA FOTO]";
                         history += `${role}: ${content}\n`;
                     }
                 });
@@ -284,26 +285,26 @@
                 context = `
                     ${aiDirectives}
                     
-                    === SITUAÇÃO ATUAL ===
-                    DATA: ${timeString} (${dayOfWeek}).
-                    PACIENTE: ${myProfile.name}.
+                    === DADOS DO MOMENTO ===
+                    DATA ATUAL: ${timeString} (${dayOfWeek}).
                     
-                    === HISTÓRICO DA CONVERSA (LEIA COM ATENÇÃO) ===
+                    === ROTEIRO DA CONVERSA ATÉ AGORA ===
+                    (Leia isso para saber o que já foi dito e NÃO se repetir)
                     ${history}
                     
-                    === SUAS REGRAS DE RESPOSTA AGORA ===
-                    1. Analise o HISTÓRICO acima.
-                    2. Se você (ASSISTENTE) já se apresentou ("Sou a Júl-IA"), VOCÊ ESTÁ PROIBIDA DE SE APRESENTAR NOVAMENTE.
-                    3. Responda APENAS a última fala do Paciente.
-                    4. Seja contínua. Aja como um chat fluido de WhatsApp.
+                    === SUA VEZ DE FALAR ===
+                    Continue a conversa a partir da última fala do PACIENTE acima.
+                    Seja fluida, direta e humana.
                 `;
             } else {
-                context = `ATUE COMO: Secretária. DATA: ${timeString}. HISTÓRICO: ${history}. Não se repita. Responda ao paciente.`;
+                context = `ATUE COMO: Secretária. DATA: ${timeString}. HISTÓRICO:\n${history}\nResponda ao paciente.`;
             }
 
+            // Chama a IA
             var reply = await window.callGeminiAPI(context, text, imageUrl);
             
-            db.ref('artifacts/' + appId + '/patients/' + myProfile.id + '/journal').push({
+            // Salva resposta
+            journalRef.push({
                 text: reply, author: 'IA (Auto)', timestamp: new Date().toISOString()
             });
         }
