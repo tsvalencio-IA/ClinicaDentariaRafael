@@ -1,5 +1,5 @@
 // ==================================================================
-// MÓDULO PORTAL DO PACIENTE (CORRIGIDO: VISÃO IA + TRAVA DE BOTÃO)
+// MÓDULO PORTAL DO PACIENTE (VERSÃO FINAL: MEMÓRIA + VISÃO + LOGIN)
 // ==================================================================
 (function() {
     var config = window.AppConfig;
@@ -16,49 +16,64 @@
         auth.onAuthStateChanged(function(user) {
             if (user) {
                 currentUser = user;
-                document.getElementById('p-submit-btn').textContent = "Carregando...";
+                var btn = document.getElementById('p-submit-btn');
+                if(btn) btn.textContent = "Carregando...";
                 setTimeout(() => findMyData(user.email), 1000); 
             } else {
                 showLogin();
             }
         });
 
-        document.getElementById('p-login-form').addEventListener('submit', handleAuthAction);
+        var loginForm = document.getElementById('p-login-form');
+        if(loginForm) loginForm.addEventListener('submit', handleAuthAction);
         
-        document.getElementById('p-toggle-mode').addEventListener('click', function() {
+        var toggleBtn = document.getElementById('p-toggle-mode');
+        if(toggleBtn) toggleBtn.addEventListener('click', function() {
             isLoginMode = !isLoginMode;
             var btn = document.getElementById('p-submit-btn');
-            var toggle = document.getElementById('p-toggle-mode');
             var title = document.querySelector('#patient-login h1');
             
             if(isLoginMode) {
                 title.textContent = "Bem-vindo, Paciente";
                 btn.textContent = "Acessar Meu Portal";
-                toggle.textContent = "Não tem senha? Criar conta";
+                toggleBtn.textContent = "Não tem senha? Criar conta";
             } else {
                 title.textContent = "Criar Acesso";
                 btn.textContent = "Criar Minha Senha";
-                toggle.textContent = "Já tenho conta. Fazer Login";
+                toggleBtn.textContent = "Já tenho conta. Fazer Login";
             }
-            document.getElementById('p-msg').textContent = "";
+            var msg = document.getElementById('p-msg');
+            if(msg) msg.textContent = "";
         });
 
-        document.getElementById('p-logout').addEventListener('click', function() { auth.signOut(); });
-        document.getElementById('p-send').addEventListener('click', sendMessage);
+        var logoutBtn = document.getElementById('p-logout');
+        if(logoutBtn) logoutBtn.addEventListener('click', function() { auth.signOut(); });
+        
+        var sendBtn = document.getElementById('p-send');
+        if(sendBtn) sendBtn.addEventListener('click', sendMessage);
         
         var fileInput = document.getElementById('file-input');
-        document.getElementById('btn-camera').addEventListener('click', function() { fileInput.click(); });
-        fileInput.addEventListener('change', function(e) {
-            if (e.target.files[0]) {
-                selectedFile = e.target.files[0];
-                document.getElementById('img-preview-area').classList.remove('hidden');
-                document.getElementById('img-name').textContent = selectedFile.name;
-            }
-        });
-        document.getElementById('remove-img').addEventListener('click', function() {
-            selectedFile = null; fileInput.value = '';
-            document.getElementById('img-preview-area').classList.add('hidden');
-        });
+        var camBtn = document.getElementById('btn-camera');
+        if(camBtn) camBtn.addEventListener('click', function() { fileInput.click(); });
+        
+        if(fileInput) {
+            fileInput.addEventListener('change', function(e) {
+                if (e.target.files[0]) {
+                    selectedFile = e.target.files[0];
+                    document.getElementById('img-preview-area').classList.remove('hidden');
+                    document.getElementById('img-name').textContent = selectedFile.name;
+                }
+            });
+        }
+        
+        var removeImgBtn = document.getElementById('remove-img');
+        if(removeImgBtn) {
+            removeImgBtn.addEventListener('click', function() {
+                selectedFile = null; 
+                if(fileInput) fileInput.value = '';
+                document.getElementById('img-preview-area').classList.add('hidden');
+            });
+        }
     }
 
     async function handleAuthAction(e) {
@@ -78,7 +93,7 @@
             } else {
                 await auth.createUserWithEmailAndPassword(email, pass);
                 msg.className = "text-green-600 text-xs mt-3 h-4";
-                msg.textContent = "Conta criada com sucesso! Verificando cadastro...";
+                msg.textContent = "Conta criada! Acessando...";
             }
         } 
         catch (error) { 
@@ -86,15 +101,9 @@
             btn.textContent = isLoginMode ? "Acessar Meu Portal" : "Criar Minha Senha";
             msg.className = "text-red-500 text-xs mt-3 h-4";
             
-            if(error.code === 'auth/email-already-in-use') {
-                msg.textContent = "Este email já possui senha. Tente fazer login.";
-            } else if(error.code === 'auth/weak-password') {
-                msg.textContent = "A senha deve ter pelo menos 6 caracteres.";
-            } else if(error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password') {
-                msg.textContent = "Email ou senha incorretos.";
-            } else {
-                msg.textContent = "Erro: " + error.message; 
-            }
+            if(error.code === 'auth/email-already-in-use') msg.textContent = "Email já cadastrado. Faça login.";
+            else if(error.code === 'auth/weak-password') msg.textContent = "Senha fraca (mínimo 6 dígitos).";
+            else msg.textContent = "Erro: " + error.message; 
         }
     }
 
@@ -122,6 +131,7 @@
                                 myDentistUid = dentistSnap.key;
                                 found = true;
                                 
+                                // Carrega Cérebro da IA
                                 db.ref('artifacts/' + appId + '/users/' + myDentistUid + '/aiConfig/directives').on('value', function(brainSnap) {
                                     if(brainSnap.exists()) {
                                         aiDirectives = brainSnap.val().promptDirectives;
@@ -136,14 +146,12 @@
             if (found) {
                 loadInterface();
             } else { 
+                // Se não achou, remove o user do Auth para não bugar o login
                 var user = auth.currentUser;
-                user.delete().then(function() {
-                    alert("Atenção: Seu email (" + email + ") não foi encontrado no cadastro da clínica.\n\nPor favor, peça para o dentista cadastrar seu email primeiro.");
-                    location.reload(); 
-                }).catch(function(error) {
-                    auth.signOut();
-                    alert("Email não cadastrado pela clínica.");
-                });
+                user.delete().catch(function(e){console.log(e)});
+                auth.signOut();
+                alert("Email não encontrado no sistema da clínica.\nPeça para seu dentista te cadastrar primeiro.");
+                location.reload();
             }
         });
     }
@@ -152,9 +160,10 @@
         document.getElementById('patient-login').classList.add('hidden');
         document.getElementById('patient-app').classList.remove('hidden');
         document.getElementById('p-name').textContent = myProfile.name;
-        document.getElementById('p-treatment').textContent = myProfile.treatmentType;
+        document.getElementById('p-treatment').textContent = myProfile.treatmentType || 'Geral';
         document.getElementById('p-status').textContent = 'Ativo';
         
+        // Garante rodapé
         var footer = document.querySelector('#patient-app footer');
         if(!footer) {
              var f = document.createElement('footer');
@@ -171,12 +180,12 @@
         var timelineDiv = document.getElementById('p-timeline');
         var journalRef = db.ref('artifacts/' + appId + '/patients/' + myProfile.id + '/journal');
         
-        journalRef.on('value', function(snap) {
+        journalRef.limitToLast(50).on('value', function(snap) {
             timelineDiv.innerHTML = '';
             if (snap.exists()) {
                 snap.forEach(function(c) {
                     var msg = c.val();
-                    if (msg.author === 'Nota Interna') return;
+                    if (msg.author === 'Nota Interna') return; // Filtra notas internas
 
                     var isMe = msg.author === 'Paciente';
                     var align = isMe ? 'ml-auto bg-blue-600 text-white' : 'mr-auto bg-gray-100 text-gray-800 border';
@@ -224,20 +233,20 @@
         
         if (!text && !selectedFile) return;
 
-        // 1. TRAVA O BOTÃO PARA EVITAR DUPLICAÇÃO
+        // Trava botão para evitar duplo envio
         btnSend.disabled = true;
 
         var mediaData = null;
         if (selectedFile && window.uploadToCloudinary) {
             try { mediaData = await window.uploadToCloudinary(selectedFile); } 
             catch (e) { 
-                alert("Erro ao enviar imagem."); 
+                alert("Erro no upload da imagem."); 
                 btnSend.disabled = false; 
                 return; 
             }
         }
 
-        // 2. SALVA NO FIREBASE
+        // Salva no Firebase
         var newMessageRef = db.ref('artifacts/' + appId + '/patients/' + myProfile.id + '/journal').push();
         await newMessageRef.set({
             text: text || (mediaData ? "Anexo" : ""),
@@ -250,55 +259,53 @@
         selectedFile = null;
         document.getElementById('img-preview-area').classList.add('hidden');
 
-        // 3. CHAMA A IA (AGORA PASSANDO A IMAGEM!)
+        // CHAMA A IA
         if (window.callGeminiAPI) {
-            // Captura URL da imagem se houver
             var imageUrl = mediaData ? mediaData.url : null;
 
-            // Busca histórico para contexto
+            // Recupera histórico recente para contexto
             var journalRef = db.ref('artifacts/' + appId + '/patients/' + myProfile.id + '/journal');
-            var snapshot = await journalRef.limitToLast(15).once('value');
+            var snapshot = await journalRef.limitToLast(10).once('value');
             var history = "";
             
             if (snapshot.exists()) {
                 snapshot.forEach(function(c) {
                     var msg = c.val();
                     if(msg.author !== 'Nota Interna') {
-                        // Diferencia claramente quem é quem para a IA
-                        var speaker = (msg.author === 'IA (Auto)' || msg.author === 'Dentista') ? 'JÚL-IA' : 'PACIENTE';
+                        // Define quem falou para a IA entender a conversa
+                        var role = (msg.author === 'IA (Auto)' || msg.author === 'Dentista') ? 'VOCÊ (IA)' : 'PACIENTE';
                         var content = msg.text;
-                        if (msg.media) content += " [Enviou uma Foto]";
-                        history += `${speaker}: ${content}\n`;
+                        if(msg.media) content += " [Enviou Foto]";
+                        history += `${role}: ${content}\n`;
                     }
                 });
             }
 
             var now = new Date();
             var timeString = now.toLocaleDateString('pt-BR') + ' às ' + now.toLocaleTimeString('pt-BR');
-            var dayOfWeek = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'][now.getDay()];
+            var dayOfWeek = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'][now.getDay()];
 
             var context = "";
             if (aiDirectives) {
+                // Injeta diretrizes + tempo + histórico
                 context = `
                     ${aiDirectives}
                     
-                    --- CONTEXTO ATUAL ---
-                    DATA/HORA: ${timeString} (${dayOfWeek}).
+                    --- SITUAÇÃO ATUAL ---
+                    DATA: ${timeString} (${dayOfWeek}).
                     
-                    --- MEMÓRIA DA CONVERSA ---
+                    --- HISTÓRICO RECENTE (Use para não se repetir) ---
                     ${history}
                     
-                    --- INSTRUÇÃO FINAL ---
-                    Você é a Júl-IA. Responda à última mensagem do PACIENTE.
-                    1. Se o histórico mostra que você já se apresentou, NÃO SE APRESENTE DE NOVO.
-                    2. Se o paciente enviou uma foto, CONFIRME que viu (ex: "Recebi a foto!").
-                    3. Seja direta, curta e humana (estilo WhatsApp).
+                    --- COMANDO ---
+                    Responda ao PACIENTE (${myProfile.name}). 
+                    Se no histórico você já se apresentou, NÃO se apresente de novo.
+                    Seja natural e contínua.
                 `;
             } else {
-                context = `ATUE COMO: Secretária. DATA: ${timeString}. HISTÓRICO: ${history}. O paciente mandou foto? Se sim, diga que vai mostrar ao Dr.`;
+                context = `ATUE COMO: Secretária. DATA: ${timeString}. HISTÓRICO: ${history}. Responda ao paciente de forma breve.`;
             }
 
-            // Passa o texto E a URL da imagem para a IA
             var reply = await window.callGeminiAPI(context, text, imageUrl);
             
             db.ref('artifacts/' + appId + '/patients/' + myProfile.id + '/journal').push({
@@ -306,7 +313,6 @@
             });
         }
 
-        // Libera o botão
         btnSend.disabled = false;
     }
 
